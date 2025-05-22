@@ -1,0 +1,11 @@
+{
+  "token": "YOUR_DISCORD_BOT_TOKEN",
+  "prefix": "!",
+  "activityChannelName": "general",
+  "announcementChannelName": "general",
+  "messageThreshold": 30,
+  "scanIntervalDays": 14,
+  "pollDurationHours": 24,
+  "pollPassThreshold": 0.6,
+  "guildId": "YOUR_SERVER_ID_HERE"
+}
