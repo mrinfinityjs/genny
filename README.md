@@ -1,4 +1,4 @@
-# Discord Activity & Pruning Bot
+# Discord Activity & Pruning Bot (Google AI Studio)
 
 This Node.js Discord bot monitors user activity in a specified channel, tracks message counts, and facilitates a polling system to prune inactive users. It also provides a command for moderators to view the last activity time of users in the monitored channel.
 
@@ -159,4 +159,4 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 
 ## License
 
-[MIT](LICENSE) (If you choose to add a license file)
+[MIT](LICENSE)
