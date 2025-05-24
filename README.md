@@ -1,162 +1,129 @@
-# Discord Activity & Pruning Bot (Google AI Studio)
+# Discord Activity, Verification & Pruning Bot
 
-This Node.js Discord bot monitors user activity in a specified channel, tracks message counts, and facilitates a polling system to prune inactive users. It also provides a command for moderators to view the last activity time of users in the monitored channel.
+This Node.js Discord bot implements a comprehensive system for managing new member verification, tracking user activity, and pruning inactive members through configurable rules and polling systems. It offers moderator commands for manual control and reporting.
 
-## Features
+## Core Features
 
-*   **Activity Tracking:** Monitors messages in a configured channel (e.g., `#general`) to track user activity.
-*   **Configurable Thresholds:** Message count threshold for activity is configurable.
-*   **Scheduled Scans:** Periodically (e.g., every 2 weeks, configurable) scans for inactive users.
-*   **Kick Polls:** Initiates a poll in a configured announcement channel to decide if an inactive user should be kicked.
-    *   Poll duration is configurable.
-    *   Poll pass threshold (percentage of "yes" votes) is configurable.
-*   **Automatic Kicking:** Kicks users if the poll passes the defined threshold.
-*   **Announcements:**
-    *   Announces when a scan starts.
-    *   Announces users who meet activity criteria.
-    *   Announces poll results and kick actions.
-*   **`!activity` Command:** Allows users with appropriate permissions (configurable, defaults to open) to list all server members and their last recorded message time in the monitored activity channel.
-*   **Data Persistence:** User activity data (message counts, last message timestamp) and last scan time are saved to a `data.json` file.
-*   **Easy Configuration:** Most settings are managed via a `config.json` file.
+*   **New Member Verification:**
+    *   Automatically assigns a "New Member" role to new joins, restricting them to a specified channel (e.g., `#general`).
+    *   Tracks messages of new members in the activity channel.
+    *   Periodically scans unverified members. If they meet configured criteria (days on server, messages sent), a poll is initiated in a specified channel to grant them a "Verified Member" role, giving full server access.
+*   **Activity Tracking & Pruning:**
+    *   Monitors messages in the configured activity channel for all members.
+    *   Periodically scans for members (excluding moderators) whose message count falls below a threshold within a set period.
+    *   Initiates individual kick polls for these inactive members.
+*   **Moderator Commands:**
+    *   `!allow [days messages]` / `!allow`: Manually verifies members, granting them the "Verified Member" role. Can target specific criteria or all eligible unverified members.
+    *   `!deny <days> <messages>`: Manually kicks unverified members who have been on the server for `<days>` and have sent `<= <messages>` messages.
+    *   `!kickpollinactive [days_silent]`: Initiates kick polls for members (excluding moderators) who haven't sent a message in the activity channel for a specified number of days.
+    *   `!activity`: Displays a paginated list of all server members, their last activity time in the monitored channel, verification status, and verification message count.
+    *   `!roles`: Displays a paginated list of all server members and their assigned roles.
+*   **Moderator Exemption:** Users with a configured "Moderator" role (or Administrator permission) are exempt from automatic scans, polls, and kick actions. Moderator-only commands are restricted.
+*   **Configurable & Persistent:**
+    *   Most settings (role names, channel names, thresholds, intervals) are managed via a `config.json` file.
+    *   Bot accepts a config file path as a command-line argument.
+    *   User data (message counts, join times, verification status, last activity) is saved to `data.json`.
+*   **Global Command Listening:** Bot listens for commands in any channel within the configured guild.
 
 ## Prerequisites
 
-*   [Node.js](https://nodejs.org/) (version 16.9.0 or newer recommended)
-*   [npm](https://www.npmjs.com/) (usually comes with Node.js)
-*   A Discord Bot Application (see Setup)
+*   [Node.js](https://nodejs.org/) (v16.9.0 or newer recommended)
+*   [npm](https://www.npmjs.com/)
+*   A Discord Bot Application
 
 ## Setup
 
-1.  **Clone the Repository (or Create Project Files):**
-    ```bash
-    # If you have a git repo, clone it:
-    # git clone <your-repo-url>
-    # cd <your-repo-directory>
-
-    # Otherwise, create a directory and navigate into it:
-    mkdir my-activity-bot
-    cd my-activity-bot
-    ```
+1.  **Project Files:**
+    *   Save the bot code as `bot.js`.
+    *   Create your `config.json` (see example below).
 
 2.  **Install Dependencies:**
     ```bash
     npm install discord.js
     ```
 
-3.  **Create a Discord Bot Application:**
+3.  **Discord Bot Application:**
     *   Go to the [Discord Developer Portal](https://discord.com/developers/applications).
-    *   Click **"New Application"** and give it a name (e.g., "ActivityBot").
-    *   Navigate to the **"Bot"** tab.
-        *   Click **"Add Bot"** and confirm.
-        *   **Copy the Bot Token.** You'll need this for `config.json`.
-        *   Under **"Privileged Gateway Intents"**:
-            *   Enable **SERVER MEMBERS INTENT**.
-            *   Enable **MESSAGE CONTENT INTENT**.
-        *   (Optional) Toggle "Public Bot" if desired (this was a point of issue during setup for some, may be required for URL generation without redirect issues).
-    *   Click **"Save Changes"**.
+    *   Create/select your application.
+    *   Navigate to the **"Bot"** tab:
+        *   Copy the **Bot Token**.
+        *   Enable **Privileged Gateway Intents**:
+            *   `SERVER MEMBERS INTENT`
+            *   `MESSAGE CONTENT INTENT`
+        *   Click **"Save Changes"**.
 
 4.  **Configure `config.json`:**
-    *   Create a file named `config.json` in the root of your project directory.
-    *   Paste the following content and fill in your details:
-        ```json
-        {
-          "token": "YOUR_DISCORD_BOT_TOKEN",
-          "prefix": "!",
-          "activityChannelName": "general",
-          "announcementChannelName": "general",
-          "messageThreshold": 30,
-          "scanIntervalDays": 14,
-          "pollDurationHours": 24,
-          "pollPassThreshold": 0.6,
-          "guildId": "YOUR_SERVER_ID_HERE"
-        }
-        ```
-    *   Replace placeholders:
-        *   `YOUR_DISCORD_BOT_TOKEN`: The bot token you copied in step 3.
-        *   `YOUR_SERVER_ID_HERE`: The ID of the Discord server you want the bot to operate in.
-            *   To get this, enable Developer Mode in Discord (User Settings -> Advanced -> Developer Mode). Then, right-click your server icon and select "Copy ID".
-        *   Adjust `activityChannelName`, `announcementChannelName`, `messageThreshold`, etc., as needed.
+    *   Create `config.json` in your project directory (or specify a path when running).
+    *   Use the example structure provided (see "Full `config.json` (Example)" above) and fill in:
+        *   `token`: Your Bot Token.
+        *   `guildId`: Your Server ID (Enable Developer Mode in Discord: User Settings > Advanced, then right-click server icon > Copy ID).
+        *   Role Names (`newMemberRoleName`, `verifiedMemberRoleName`, `moderatorRoleName`): **Must match exactly** (case-sensitive) the names of the roles in your Discord server.
+        *   Channel Names (`activityChannelName`, `announcementChannelName`, `verificationPollChannelName`): Exact names of the channels.
+        *   Adjust thresholds and intervals as desired.
 
-5.  **Invite the Bot to Your Server:**
-    *   In the Discord Developer Portal, for your application, go to **"OAuth2" -> "URL Generator"**.
-    *   **SCOPES:** Check `bot`.
-    *   **BOT PERMISSIONS:** Select the following:
-        *   `View Channels`
-        *   `Send Messages`
-        *   `Embed Links`
-        *   `Read Message History`
-        *   `Add Reactions`
-        *   `Kick Members`
-    *   Copy the **Generated URL** at the bottom of the page.
-    *   Paste the URL into your browser, select your server, and authorize the bot.
+5.  **Discord Server Role & Channel Setup:**
+    *   **Roles:**
+        *   Create the roles specified in `config.json`: `New Member`, `Verified Member`, `Moderator`.
+        *   **`@everyone` Role:** In Server Settings > Roles > `@everyone`, **DISABLE `View Channel` permission for ALL channels/categories.** This ensures new users are restricted.
+        *   **`New Member` Role:**
+            *   Grant `View Channel`, `Send Messages`, `Read Message History` **ONLY** for your `activityChannelName` (e.g., `#general`) and your general voice channel.
+            *   For all other channels/categories, explicitly **DISABLE `View Channel`** for this role.
+        *   **`Verified Member` Role:** Grant all permissions desired for full members (e.g., view all public channels).
+        *   **`Moderator` Role:** Grant permissions appropriate for moderators, including "Manage Server" if they need to manage bot settings or other server aspects. The bot uses this role name to identify moderators for command access and exemptions.
+    *   **Channels:** Create the channels specified in `config.json` if they don't exist.
 
-6.  **Bot Role Permissions:**
-    *   Ensure the bot's role in your server is high enough in the role hierarchy to kick the members it needs to. It cannot kick members with roles equal to or higher than its own.
-    *   Ensure the bot has permission to view, send messages, embed links, and add reactions in the configured `activityChannelName` and `announcementChannelName`.
+6.  **Invite the Bot:**
+    *   In the Developer Portal (OAuth2 > URL Generator):
+        *   **SCOPES:** Check `bot`.
+        *   **BOT PERMISSIONS:** Select `View Channels`, `Send Messages`, `Embed Links`, `Read Message History`, `Add Reactions`, `Kick Members`, `Manage Roles`.
+    *   Copy the generated URL and use it to invite the bot to your server.
+    *   Ensure the bot's role is high enough in the hierarchy to manage roles (add/remove `New Member`/`Verified Member`) and kick members (below moderators/admins).
 
 ## Running the Bot
 
-1.  Navigate to your project directory in your terminal.
-2.  Run the bot using:
+1.  Open your terminal in the project directory.
+2.  Run:
     ```bash
-    node bot.js
+    node bot.js [path/to/your/config.json]
     ```
-3.  You should see log messages in your console indicating the bot has logged in and is ready.
+    *   If `[path/to/your/config.json]` is omitted, it defaults to `config.json` in the same directory as `bot.js`.
+    *   Example: `node bot.js` or `node bot.js server_configs/main_config.json`
 
-## Usage
+## Commands (Default Prefix: `!`)
 
-### Automatic Activity Monitoring
+**Moderator Only Commands:**
 
-The bot automatically tracks messages in the channel specified by `activityChannelName`. Every `scanIntervalDays`, it will:
-1.  Announce the start of the scan.
-2.  Identify users with `messageCount` less than or equal to `messageThreshold`.
-3.  Create kick polls for these inactive users in the `announcementChannelName`.
-4.  Announce users who have met the activity criteria.
-5.  After polls conclude (duration set by `pollDurationHours`):
-    *   If a poll passes (votes meet `pollPassThreshold`), the user is kicked.
-    *   Results of each poll are announced.
-6.  Message counts for all users are reset for the next activity period.
+*   **`allow [days messages]`**: Manually verifies members who have been on the server for at least `[days]` and sent at least `[messages]` in the activity channel.
+    *   Example: `!allow 7 20`
+*   **`allow`**: Manually verifies ALL currently unverified members who have the "New Member" role.
+*   **`deny <days> <messages>`**: Kicks unverified "New Members" who joined at least `<days>` ago and have `<= <messages>` in the activity channel.
+    *   Example: `!deny 14 5`
+*   **`kickpollinactive [days_silent]`**: Initiates kick polls for any non-moderator member silent in the activity channel for `[days_silent]` (or `config.kickPollSilentDaysThreshold` if `[days_silent]` is omitted).
+    *   Example: `!kickpollinactive 30`
+*   **`roles`**: Displays a list of all server members and their assigned roles.
 
-### Commands
+**Public Commands (Can be restricted in code if needed):**
 
-*   **`!activity`** (or your configured prefix + activity)
-    *   Lists all non-bot members in the server and their last recorded message timestamp in the `activityChannelName`.
-    *   Output is paginated in embeds for readability.
-    *   By default, any user can use this. You can modify `bot.js` to restrict it (see commented-out permission check in the `messageCreate` event handler).
+*   **`activity`**: Displays a list of members, their last activity time in the monitored channel, verification status, and verification message count.
 
 ## `data.json` File
 
 This file is automatically created and managed by the bot. It stores:
-*   `lastScanTimestamp`: The timestamp of the last completed activity scan.
+*   `lastScanTimestamp`: Timestamp of the last pruning scan.
+*   `lastVerificationScanTimestamp`: Timestamp of the last new member verification scan.
 *   `users`: An object where keys are user IDs. Each user object contains:
-    *   `messageCount`: Number of messages sent in the `activityChannelName` during the current period.
-    *   `username`: The user's Discord username.
-    *   `lastMessageTimestamp`: The timestamp of the user's last message in the `activityChannelName`.
+    *   `messageCount`: Messages in `activityChannelName` for current pruning period (resets).
+    *   `username`: Discord username.
+    *   `lastMessageTimestamp`: Timestamp of last message in `activityChannelName`.
+    *   `joinTimestamp`: Timestamp of when the user joined the server (or when bot first saw them).
+    *   `isVerified`: Boolean, `true` if they have the "Verified Member" role.
+    *   `verificationMessages`: Total messages in `activityChannelName` while unverified (used for verification criteria).
 
-**Do not manually edit `data.json` unless you know what you are doing, as it can lead to unexpected behavior.**
+**Do not manually edit `data.json` unless absolutely necessary.**
 
 ## Troubleshooting
 
-*   **"Guild with ID ... not found"**:
-    *   Ensure `guildId` in `config.json` is correct.
-    *   Verify the bot has been successfully invited to and is present in that server.
-*   **Bot not responding to messages/commands**:
-    *   Check that the `token` in `config.json` is correct.
-    *   Ensure Privileged Gateway Intents (Server Members, Message Content) are enabled in the Developer Portal.
-    *   Verify the bot has necessary channel permissions (View Channel, Send Messages, Read Message History).
-    *   Check the console for any error messages.
-*   **Bot cannot kick users**:
-    *   Ensure the bot has the "Kick Members" permission.
-    *   Make sure the bot's role is higher in the server's role hierarchy than the role of the member it's trying to kick.
-*   **Issues generating invite URL in Developer Portal**:
-    *   Try clearing browser cache/cookies or using an Incognito window.
-    *   Ensure ONLY the `bot` scope is selected when generating the bot invite URL.
-    *   Some users reported needing to toggle "Public Bot" ON (on the "Bot" tab) for the URL generator to work without demanding a Redirect URI.
-
-## Contributing
-
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
-
-## License
-
-[MIT](LICENSE)
+*   **"Guild ... not found" / Role/Channel not found:** Double-check names in `config.json` (case-sensitive!) and ensure the `guildId` is correct. Verify the bot is in the server.
+*   **Permissions Errors:** Ensure the bot's role has the necessary permissions (`Manage Roles`, `Kick Members`) and is high enough in the role hierarchy.
+*   **Commands not working:** Check `prefix` in `config.json`. Ensure Privileged Intents are enabled. Check console for errors.
+*   **Users not being restricted:** Crucially, ensure the `@everyone` role has `View Channel` disabled for all channels except those you explicitly want everyone (even without roles) to see. The `New Member` role should then grant specific access.
