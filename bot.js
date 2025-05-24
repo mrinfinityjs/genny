@@ -369,6 +369,60 @@ client.on('messageCreate', async message => {
             embeds.push(embed);
         }
         for (const embed of embeds) { await message.channel.send({ embeds: [embed] }).catch(console.error); }
+    }     else if (command === "commands" || command === "help") {
+        const embed = new EmbedBuilder()
+            .setColor(0x0099FF)
+            .setTitle("📜 Bot Commands List")
+            .setDescription("Here are all the available commands:")
+            .setTimestamp();
+
+        // Public Commands
+        embed.addFields({ name: "📢 Public Commands", value: "\u200B" }); // \u200B is a zero-width space for spacing
+        embed.addFields(
+            {
+                name: `\`${config.prefix}activity\``,
+                value: "Shows a report of user activity in the monitored channel, including last message time and verification status.\n**Usage:** `!activity`",
+                inline: false
+            }
+        );
+
+        // Moderator Only Commands
+        embed.addFields({ name: "\u200B", value: "\u200B" }); // Spacer
+        embed.addFields({ name: "🛠️ Moderator Commands", value: "*(Requires Moderator role or Administrator permission)*" });
+        embed.addFields(
+            {
+                name: `\`${config.prefix}allow [days messages]\``,
+                value: "Manually verifies members. \n- With `[days messages]`: Verifies unverified 'New Members' who joined at least `[days]` ago and have sent at least `[messages]` in the activity channel.\n- Without arguments: Verifies ALL unverified 'New Members'.\n**Usage:** `!allow` OR `!allow 7 20`",
+                inline: false
+            },
+            {
+                name: `\`${config.prefix}deny <days> <messages>\``,
+                value: "Kicks unverified 'New Members' who joined at least `<days>` ago and have sent `<= <messages>` in the activity channel.\n**Usage:** `!deny 14 5`",
+                inline: false
+            },
+            {
+                name: `\`${config.prefix}kickpollinactive [days_silent]\``,
+                value: `Initiates kick polls for members (excluding moderators) who have been silent in the activity channel for \`[days_silent]\`. If \`[days_silent]\` is omitted, uses the value from \`config.kickPollSilentDaysThreshold\` (currently ${config.kickPollSilentDaysThreshold} days).\n**Usage:** \`!kickpollinactive\` OR \`!kickpollinactive 30\``,
+                inline: false
+            },
+            {
+                name: `\`${config.prefix}roles\``,
+                value: "Displays a list of all server members and their assigned roles.\n**Usage:** `!roles`",
+                inline: false
+            },
+            {
+                name: `\`${config.prefix}commands\` or \`${config.prefix}help\``,
+                value: "Shows this help message.\n**Usage:** `!commands`",
+                inline: false
+            }
+        );
+
+        try {
+            await message.channel.send({ embeds: [embed] });
+        } catch (error) {
+            console.error("Failed to send help embed:", error);
+            message.reply("Sorry, I couldn't display the commands right now.").catch(console.error);
+        }
     }
 });
 
