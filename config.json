@@ -2,10 +2,21 @@
   "token": "YOUR_DISCORD_BOT_TOKEN",
   "prefix": "!",
   "activityChannelName": "general",
-  "announcementChannelName": "general",
+  "announcementChannelName": "mod-announcements",
   "messageThreshold": 30,
   "scanIntervalDays": 14,
   "pollDurationHours": 24,
   "pollPassThreshold": 0.6,
-  "guildId": "YOUR_SERVER_ID_HERE"
+  "guildId": "YOUR_SERVER_ID_HERE",
+
+  "newMemberRoleName": "New Member",
+  "verifiedMemberRoleName": "Verified Member",
+  "verificationPollDays": 7,
+  "verificationMessageThreshold": 20,
+  "verificationPollChannelName": "verification-polls",
+  "verificationPollDurationHours": 24,
+  "verificationPollPassThreshold": 0.6,
+
+  "moderatorRoleName": "Moderator",
+  "kickPollSilentDaysThreshold": 30
 }
