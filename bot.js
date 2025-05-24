@@ -1,17 +1,18 @@
-const { Client, GatewayIntentBits, Partials, Collection, EmbedBuilder } = require('discord.js');
-const fs = require('fs');
-const path = require('path'); // Corrected: require path module
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionsBitField } = require('discord.js');
+const fs = require('fs'); // Corrected: removed quotes
+const path = require('path');
 
 // --- CONFIGURATION ---
-const CONFIG_PATH = path.join(__dirname, 'config.json');
+const configFileArg = process.argv[2];
+const CONFIG_PATH = configFileArg ? path.resolve(process.cwd(), configFileArg) : path.join(__dirname, 'config.json');
 const DATA_PATH = path.join(__dirname, 'data.json');
 
 let config;
 try {
+    console.log(`Loading configuration from: ${CONFIG_PATH}`);
     config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 } catch (error) {
-    console.error("Error loading config.json:", error);
-    console.log("Please ensure config.json exists and is correctly formatted.");
+    console.error(`Error loading configuration from ${CONFIG_PATH}:`, error);
     process.exit(1);
 }
 
@@ -20,8 +21,8 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers, // Required for fetching members
-        GatewayIntentBits.GuildMessageReactions // Required for poll reactions
+        GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessageReactions
     ],
     partials: [Partials.Message, Partials.Channel, Partials.Reaction, Partials.User],
 });
@@ -29,7 +30,8 @@ const client = new Client({
 // --- DATA HANDLING ---
 let botData = {
     lastScanTimestamp: 0,
-    users: {} // { userId: { messageCount: 0, username: "name", lastMessageTimestamp: null } }
+    lastVerificationScanTimestamp: 0,
+    users: {}
 };
 
 function loadData() {
@@ -38,11 +40,18 @@ function loadData() {
             const rawData = fs.readFileSync(DATA_PATH, 'utf8');
             botData = JSON.parse(rawData);
             if (!botData.users) botData.users = {};
-            // Ensure all existing users have the new field, defaulting to null
+            if (botData.lastVerificationScanTimestamp === undefined) botData.lastVerificationScanTimestamp = 0;
+            if (botData.lastScanTimestamp === undefined) botData.lastScanTimestamp = 0;
+
+
             for (const userId in botData.users) {
-                if (botData.users[userId].lastMessageTimestamp === undefined) {
-                    botData.users[userId].lastMessageTimestamp = null;
-                }
+                const user = botData.users[userId];
+                if (user.joinTimestamp === undefined) user.joinTimestamp = null;
+                if (user.isVerified === undefined) user.isVerified = false;
+                if (user.verificationMessages === undefined) user.verificationMessages = user.messageCount || 0;
+                if (user.lastMessageTimestamp === undefined) user.lastMessageTimestamp = null;
+                if (user.messageCount === undefined) user.messageCount = 0;
+                if (user.username === undefined) user.username = "UnknownUser";
             }
             console.log("User activity data loaded.");
         } else {
@@ -62,330 +71,453 @@ function saveData() {
     }
 }
 
-// --- HELPER FUNCTION ---
+// --- HELPER FUNCTIONS ---
 function formatTimeAgo(timestamp) {
-    if (!timestamp) return "Never in monitored channel";
+    if (!timestamp) return "Unknown";
     const now = Date.now();
     const seconds = Math.round((now - timestamp) / 1000);
-
     if (seconds < 5) return "Just now";
     if (seconds < 60) return `${seconds} secs ago`;
-    
     const minutes = Math.round(seconds / 60);
     if (minutes < 60) return `${minutes} min(s) ago`;
-    
     const hours = Math.round(minutes / 60);
     if (hours < 24) return `${hours} hour(s) ago`;
-    
     const days = Math.round(hours / 24);
     return `${days} day(s) ago`;
 }
 
-// --- BOT LOGIC ---
+async function isModerator(member) {
+    if (!member) return false;
+    if (member.permissions.has(PermissionsBitField.Flags.Administrator)) return true;
+    const moderatorRole = member.guild.roles.cache.find(role => role.name === config.moderatorRoleName);
+    return moderatorRole && member.roles.cache.has(moderatorRole.id);
+}
+
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
-
-    // --- START DIAGNOSTIC (Optional but helpful during setup) ---
-    console.log("Bot is currently in the following guilds:");
-    if (client.guilds.cache.size === 0) {
-        console.log("  (None or cache not populated yet - this might be an issue if it persists)");
+    const guild = client.guilds.cache.get(config.guildId);
+    if (!guild) {
+        console.error(`CRITICAL: Guild with ID ${config.guildId} not found. Bot will not function correctly.`);
     } else {
-        client.guilds.cache.forEach(guild => {
-            console.log(`  - Name: ${guild.name}, ID: ${guild.id}`);
-        });
+        console.log(`Operating in guild: ${guild.name} (ID: ${guild.id})`);
+        client.newMemberRole = guild.roles.cache.find(role => role.name === config.newMemberRoleName);
+        client.verifiedMemberRole = guild.roles.cache.find(role => role.name === config.verifiedMemberRoleName);
+        if (!client.newMemberRole) console.warn(`New Member Role "${config.newMemberRoleName}" not found! Ensure it exists and the name is correct in config.`);
+        if (!client.verifiedMemberRole) console.warn(`Verified Member Role "${config.verifiedMemberRoleName}" not found! Ensure it exists and the name is correct in config.`);
     }
-    const expectedGuildId = config.guildId;
-    const foundGuild = client.guilds.cache.get(expectedGuildId);
-    if (foundGuild) {
-        console.log(`SUCCESS: Expected guild "${foundGuild.name}" (ID: ${expectedGuildId}) was found in cache.`);
-    } else {
-        console.error(`ERROR: Expected guild with ID "${expectedGuildId}" was NOT found in cache.`);
-        console.log(`Please verify:`);
-        console.log(`  1. The guildId in config.json ("${expectedGuildId}") is correct for your server.`);
-        console.log(`  2. The bot ("${client.user.tag}") has been successfully invited to and is a member of that server.`);
-    }
-    // --- END DIAGNOSTIC ---
 
     console.log(`Monitoring #${config.activityChannelName} for activity.`);
-    console.log(`Announcements and polls will be in #${config.announcementChannelName}.`);
-    console.log(`Command prefix is: ${config.prefix}`);
+    console.log(`Announcement channel: #${config.announcementChannelName}`);
+    console.log(`Verification poll channel: #${config.verificationPollChannelName}`);
+    console.log(`Command prefix: ${config.prefix}`);
 
     loadData();
 
-    const scanIntervalMs = config.scanIntervalDays * 24 * 60 * 60 * 1000;
-    if (Date.now() - (botData.lastScanTimestamp || 0) >= scanIntervalMs) {
-        console.log("Scan is overdue. Running now.");
-        await performActivityScan();
+    const kickScanIntervalMs = config.scanIntervalDays * 24 * 60 * 60 * 1000;
+    if (Date.now() - (botData.lastScanTimestamp || 0) >= kickScanIntervalMs && guild) {
+        console.log("Kick pruning scan is overdue. Running now.");
+        await performActivityScan().catch(console.error);
+    }
+    setInterval(async () => { if (client.guilds.cache.get(config.guildId)) await performActivityScan().catch(console.error); }, kickScanIntervalMs);
+
+    const verificationScanIntervalMs = (config.verificationPollDays / 2) * 24 * 60 * 60 * 1000;
+    if (Date.now() - (botData.lastVerificationScanTimestamp || 0) >= verificationScanIntervalMs && guild) {
+        console.log("New member verification scan is overdue. Running now.");
+        await performVerificationScan().catch(console.error);
+    }
+    setInterval(async () => { if (client.guilds.cache.get(config.guildId)) await performVerificationScan().catch(console.error); }, verificationScanIntervalMs);
+
+    console.log("Bot ready and scans scheduled.");
+});
+
+client.on('guildMemberAdd', async member => {
+    if (member.guild.id !== config.guildId) return;
+    if (member.user.bot) return;
+
+    console.log(`New member joined: ${member.user.tag} (ID: ${member.id})`);
+    const newMemberRole = client.newMemberRole || member.guild.roles.cache.find(role => role.name === config.newMemberRoleName);
+    if (!newMemberRole) {
+        console.error(`Error: Role "${config.newMemberRoleName}" not found on server for new member.`);
+        return;
     }
 
-    setInterval(performActivityScan, scanIntervalMs);
+    try {
+        await member.roles.add(newMemberRole);
+        console.log(`Assigned "${config.newMemberRoleName}" to ${member.user.tag}.`);
+
+        botData.users[member.id] = {
+            username: member.user.username,
+            messageCount: 0,
+            lastMessageTimestamp: null,
+            joinTimestamp: Date.now(),
+            isVerified: false,
+            verificationMessages: 0
+        };
+        saveData();
+
+        const activityChannel = member.guild.channels.cache.find(ch => ch.name === config.activityChannelName && ch.isTextBased());
+        if (activityChannel) {
+            activityChannel.send(`Welcome <@${member.id}>! Please be active in this channel to gain full server access. You need ${config.verificationMessageThreshold} messages and to be here for ${config.verificationPollDays} days for a verification poll.`).catch(console.error);
+        }
+    } catch (error) {
+        console.error(`Failed to assign role or save data for new member ${member.user.tag}:`, error);
+    }
 });
 
 client.on('messageCreate', async message => {
-    if (message.author.bot) return;
-    if (!message.guild) return;
-    if (message.guild.id !== config.guildId) return;
+    if (message.author.bot || !message.guild || message.guild.id !== config.guildId) return;
 
-    // Activity tracking for the monitored channel
     let activityChannel;
-    try {
-        if (!client.activityChannel) {
-            client.activityChannel = message.guild.channels.cache.find(
-                ch => ch.name === config.activityChannelName && ch.isTextBased()
-            );
-            if (!client.activityChannel) {
-                 console.warn(`Activity channel #${config.activityChannelName} not found on first message.`);
-            }
-        }
-        activityChannel = client.activityChannel;
+    if (!client.activityChannel) {
+        client.activityChannel = message.guild.channels.cache.find(ch => ch.name === config.activityChannelName && ch.isTextBased());
+    }
+    activityChannel = client.activityChannel;
 
-        if (activityChannel && message.channel.id === activityChannel.id) {
-            const userId = message.author.id;
-            if (!botData.users[userId]) {
-                botData.users[userId] = { messageCount: 0, username: message.author.username, lastMessageTimestamp: null };
-            }
-            botData.users[userId].messageCount = (botData.users[userId].messageCount || 0) + 1;
-            botData.users[userId].username = message.author.username;
-            botData.users[userId].lastMessageTimestamp = Date.now();
-            saveData();
+    if (activityChannel && message.channel.id === activityChannel.id) {
+        const userId = message.author.id;
+        if (!botData.users[userId]) {
+            const member = await message.guild.members.fetch(userId).catch(() => null);
+            const verifiedRole = client.verifiedMemberRole || message.guild.roles.cache.find(role => role.name === config.verifiedMemberRoleName);
+            botData.users[userId] = {
+                username: message.author.username,
+                messageCount: 0,
+                lastMessageTimestamp: null,
+                joinTimestamp: member ? member.joinedTimestamp : Date.now(),
+                isVerified: member && verifiedRole ? member.roles.cache.has(verifiedRole.id) : false,
+                verificationMessages: 0
+            };
         }
-    } catch (err) {
-        console.error("Error during activity channel processing in messageCreate:", err);
+        botData.users[userId].messageCount = (botData.users[userId].messageCount || 0) + 1;
+        botData.users[userId].username = message.author.username;
+        botData.users[userId].lastMessageTimestamp = Date.now();
+
+        if (!botData.users[userId].isVerified) {
+            botData.users[userId].verificationMessages = (botData.users[userId].verificationMessages || 0) + 1;
+        }
+        saveData();
     }
 
-    // Command Handling
-    if (message.content.startsWith(config.prefix)) {
-        const args = message.content.slice(config.prefix.length).trim().split(/ +/);
-        const command = args.shift().toLowerCase();
+    if (!message.content.startsWith(config.prefix)) return;
 
-        if (command === "activity") {
-            // Optional: Restrict command usage
-            // if (!message.member.permissions.has("ManageMessages") && message.author.id !== message.guild.ownerId) {
-            //      return message.reply("You don't have permission to use this command.");
-            // }
+    const args = message.content.slice(config.prefix.length).trim().split(/ +/);
+    const command = args.shift().toLowerCase();
+    const memberIsModerator = await isModerator(message.member);
 
+    if (command === "activity") {
+        try {
+            await message.channel.sendTyping();
+            const guild = message.guild;
+            let currentActivityChannelName = config.activityChannelName;
+            if (client.activityChannel) currentActivityChannelName = client.activityChannel.name;
+
+            await guild.members.fetch();
+            const members = guild.members.cache.filter(m => !m.user.bot).sort((a, b) => a.displayName.localeCompare(b.displayName));
+            if (members.size === 0) return message.channel.send("No non-bot members found.").catch(console.error);
+
+            const userActivityInfo = [];
+            for (const member of members.values()) {
+                const userData = botData.users[member.id];
+                const timeAgo = formatTimeAgo(userData?.lastMessageTimestamp);
+                const verifiedStatus = userData?.isVerified ? " (Verified)" : (client.newMemberRole && member.roles.cache.has(client.newMemberRole.id) ? " (New Member)" : "");
+                userActivityInfo.push({
+                    name: `${member.displayName}${verifiedStatus}`,
+                    value: `Activity Channel (#${currentActivityChannelName}): ${timeAgo}\nVerification Msgs: ${userData?.verificationMessages || 0}`,
+                });
+            }
+
+            const embeds = []; const usersPerEmbed = 10;
+            for (let i = 0; i < userActivityInfo.length; i += usersPerEmbed) {
+                const chunk = userActivityInfo.slice(i, i + usersPerEmbed);
+                const embed = new EmbedBuilder().setColor(0x00AAFF).setTitle(`User Activity Report (Page ${Math.floor(i / usersPerEmbed) + 1})`)
+                    .setDescription(`Activity in **#${currentActivityChannelName}**.`).setTimestamp();
+                chunk.forEach(ui => embed.addFields({ name: ui.name, value: ui.value, inline: false }));
+                embeds.push(embed);
+            }
+            for (const embed of embeds) { await message.channel.send({ embeds: [embed] }).catch(console.error); }
+
+        } catch (error) { console.error("Error in !activity:", error); message.reply("Error fetching activity.").catch(console.error); }
+    } else if (command === "allow") {
+        if (!memberIsModerator) return message.reply("You don't have permission.").catch(console.error);
+        if (!client.verifiedMemberRole || !client.newMemberRole) return message.reply("Role(s) not configured/found.").catch(console.error);
+
+        const daysArg = parseInt(args[0]);
+        const messagesArg = parseInt(args[1]);
+        let verifiedCount = 0;
+        const announcementChannel = message.guild.channels.cache.find(ch => ch.name === config.announcementChannelName);
+        await message.guild.members.fetch();
+        let membersToVerify = [];
+
+        if (args.length === 0) {
+            membersToVerify = message.guild.members.cache.filter(m =>
+                !m.user.bot && botData.users[m.id] && !botData.users[m.id].isVerified && m.roles.cache.has(client.newMemberRole.id)
+            ).map(m => m);
+        } else if (!isNaN(daysArg) && !isNaN(messagesArg) && daysArg >= 0 && messagesArg >= 0) {
+            const requiredJoinTime = Date.now() - (daysArg * 24 * 60 * 60 * 1000);
+            membersToVerify = message.guild.members.cache.filter(m =>
+                !m.user.bot && botData.users[m.id] && !botData.users[m.id].isVerified &&
+                m.roles.cache.has(client.newMemberRole.id) &&
+                (botData.users[m.id].joinTimestamp && botData.users[m.id].joinTimestamp <= requiredJoinTime) &&
+                (botData.users[m.id].verificationMessages || 0) >= messagesArg
+            ).map(m => m);
+        } else {
+            return message.reply("Usage: `!allow` or `!allow <days> <messages>`").catch(console.error);
+        }
+
+        if (membersToVerify.length === 0) return message.reply("No members found matching criteria.").catch(console.error);
+        await message.reply(`Attempting to verify ${membersToVerify.length} member(s)...`).catch(console.error);
+
+        for (const member of membersToVerify) {
+            if (await isModerator(member)) continue;
             try {
-                await message.channel.sendTyping();
-                
-                let currentActivityChannelName = config.activityChannelName;
-                if (client.activityChannel) {
-                    currentActivityChannelName = client.activityChannel.name;
-                } else {
-                    const foundCh = message.guild.channels.cache.find(ch => ch.name === config.activityChannelName && ch.isTextBased());
-                    if (foundCh) currentActivityChannelName = foundCh.name;
-                    else console.warn(`!activity: Could not find activity channel #${config.activityChannelName} to display its name.`);
-                }
+                await member.roles.add(client.verifiedMemberRole);
+                await member.roles.remove(client.newMemberRole);
+                botData.users[member.id].isVerified = true;
+                verifiedCount++;
+                if (announcementChannel) announcementChannel.send(`✅ ${member.user.tag} was manually verified by ${message.author.tag}.`).catch(console.error);
+            } catch (err) { console.error(`Failed to verify ${member.user.tag} via !allow:`, err); }
+        }
+        saveData();
+        message.channel.send(`Successfully verified ${verifiedCount} member(s).`).catch(console.error);
 
-                await message.guild.members.fetch();
-                const members = message.guild.members.cache
-                    .filter(member => !member.user.bot)
-                    .sort((a, b) => a.displayName.localeCompare(b.displayName));
+    } else if (command === "deny") {
+        if (!memberIsModerator) return message.reply("You don't have permission.").catch(console.error);
+        if (!client.newMemberRole) return message.reply("New Member role not found.").catch(console.error);
 
-                if (members.size === 0) {
-                    return message.channel.send("No non-bot members found in this server.");
-                }
+        const daysArg = parseInt(args[0]); const messagesArg = parseInt(args[1]);
+        if (isNaN(daysArg) || isNaN(messagesArg) || daysArg < 0 || messagesArg < 0) {
+            return message.reply("Usage: `!deny <days_on_server> <max_messages>`").catch(console.error);
+        }
 
-                const userActivityInfo = [];
-                for (const member of members.values()) {
-                    const userData = botData.users[member.id];
-                    const timestamp = userData ? userData.lastMessageTimestamp : null;
-                    const timeAgo = formatTimeAgo(timestamp);
-                    userActivityInfo.push({
-                        name: member.displayName,
-                        value: `Last message in #${currentActivityChannelName}: ${timeAgo}`,
-                        inline: false
-                    });
-                }
+        const requiredJoinTime = Date.now() - (daysArg * 24 * 60 * 60 * 1000);
+        let kickedCount = 0;
+        const announcementChannel = message.guild.channels.cache.find(ch => ch.name === config.announcementChannelName);
+        await message.guild.members.fetch();
 
-                const embeds = [];
-                const usersPerEmbed = 15;
+        const membersToConsider = message.guild.members.cache.filter(m =>
+            !m.user.bot && botData.users[m.id] && !botData.users[m.id].isVerified &&
+            m.roles.cache.has(client.newMemberRole.id) &&
+            (botData.users[m.id].joinTimestamp && botData.users[m.id].joinTimestamp <= requiredJoinTime) &&
+            (botData.users[m.id].verificationMessages || 0) <= messagesArg
+        ).map(m => m);
 
-                for (let i = 0; i < userActivityInfo.length; i += usersPerEmbed) {
-                    const chunk = userActivityInfo.slice(i, i + usersPerEmbed);
-                    const embed = new EmbedBuilder()
-                        .setColor(0x00AAFF)
-                        .setTitle(`User Activity Report (Page ${Math.floor(i / usersPerEmbed) + 1})`)
-                        .setDescription(`Showing last recorded message activity for users in channel **#${currentActivityChannelName}**.`)
-                        .setTimestamp();
-                    
-                    chunk.forEach(userInfo => {
-                        embed.addFields({ name: userInfo.name, value: userInfo.value, inline: userInfo.inline });
-                    });
-                    embeds.push(embed);
-                }
+        if (membersToConsider.length === 0) return message.reply("No members found matching criteria.").catch(console.error);
+        await message.reply(`Found ${membersToConsider.length} members. Kicking...`).catch(console.error);
 
-                if (embeds.length === 0) {
-                    message.channel.send("Could not generate activity report.");
-                } else {
-                    for (const embed of embeds) {
-                        await message.channel.send({ embeds: [embed] });
-                    }
-                }
+        for (const member of membersToConsider) {
+            if (await isModerator(member)) continue;
+            try {
+                await member.kick(`Denied by ${message.author.tag}: ${daysArg}d, <=${messagesArg}m.`);
+                kickedCount++;
+                if (announcementChannel) announcementChannel.send(`👢 ${member.user.tag} kicked by ${message.author.tag} (denied).`).catch(console.error);
+                delete botData.users[member.id];
+            } catch (err) { console.error(`Failed to kick ${member.user.tag} via !deny:`, err); }
+        }
+        saveData();
+        message.channel.send(`Successfully kicked ${kickedCount} member(s).`).catch(console.error);
 
-            } catch (error) {
-                console.error("Error executing !activity command:", error);
-                message.channel.send("An error occurred while fetching user activity. Please check the console.");
+    } else if (command === "kickpollinactive") {
+        if (!memberIsModerator) return message.reply("You don't have permission.").catch(console.error);
+        const daysSilentArg = parseInt(args[0]);
+        const silentThreshold = daysSilentArg || config.kickPollSilentDaysThreshold;
+        if (isNaN(silentThreshold) || silentThreshold <= 0) {
+            return message.reply(`Usage: \`!kickpollinactive [days]\` (default: ${config.kickPollSilentDaysThreshold}d).`).catch(console.error);
+        }
+
+        const guild = message.guild;
+        const announcementChannel = guild.channels.cache.find(ch => ch.name === config.announcementChannelName);
+        if (!announcementChannel) return message.reply("Announcement channel not found.").catch(console.error);
+
+        const silentTimeMs = Date.now() - (silentThreshold * 24 * 60 * 60 * 1000);
+        let pollCount = 0;
+        await guild.members.fetch();
+        const membersToPoll = [];
+
+        for (const member of guild.members.cache.values()) {
+            if (member.user.bot || await isModerator(member)) continue;
+            const userData = botData.users[member.id];
+            if (userData && ((userData.lastMessageTimestamp && userData.lastMessageTimestamp < silentTimeMs) ||
+                (!userData.lastMessageTimestamp && userData.joinTimestamp && userData.joinTimestamp < silentTimeMs))) {
+                membersToPoll.push(member);
             }
         }
-        // Add other commands here using 'else if (command === "othercommand") { ... }'
+
+        if (membersToPoll.length === 0) return message.reply(`No members inactive for >${silentThreshold} days.`).catch(console.error);
+        await message.reply(`Found ${membersToPoll.length} inactive members. Starting polls...`).catch(console.error);
+        for (const member of membersToPoll) {
+            await createKickPoll(guild, announcementChannel, member.id, member.user.username, `Silent for >${silentThreshold} days in #${config.activityChannelName}`);
+            pollCount++;
+        }
+        message.channel.send(`Initiated ${pollCount} kick polls. Check ${announcementChannel}.`).catch(console.error);
+
+    } else if (command === "roles") {
+        if (!memberIsModerator) return message.reply("You don't have permission.").catch(console.error);
+        await message.channel.sendTyping();
+        const guild = message.guild;
+        await guild.members.fetch();
+        const membersWithRoles = guild.members.cache.filter(m => !m.user.bot)
+            .map(member => ({
+                name: member.displayName,
+                value: member.roles.cache.filter(role => role.id !== guild.id).map(role => role.name).join(', ') || "No specific roles"
+            })).sort((a, b) => a.name.localeCompare(b.name));
+
+        if (membersWithRoles.length === 0) return message.reply("No non-bot members found.").catch(console.error);
+        const embeds = []; const usersPerEmbed = 15;
+        for (let i = 0; i < membersWithRoles.length; i += usersPerEmbed) {
+            const chunk = membersWithRoles.slice(i, i + usersPerEmbed);
+            const embed = new EmbedBuilder().setColor(0x00FFFF).setTitle(`Member Roles (Page ${Math.floor(i / usersPerEmbed) + 1})`);
+            chunk.forEach(item => embed.addFields({ name: item.name, value: item.value, inline: false }));
+            embeds.push(embed);
+        }
+        for (const embed of embeds) { await message.channel.send({ embeds: [embed] }).catch(console.error); }
     }
 });
 
 async function performActivityScan() {
-    console.log("Starting activity scan...");
+    console.log("Starting activity scan (for kick pruning)...");
     const guild = client.guilds.cache.get(config.guildId);
-    if (!guild) {
-        console.error(`Guild with ID ${config.guildId} not found. Scan aborted.`);
-        return;
-    }
+    if (!guild) return console.error("Guild not found for activity scan.");
+    const announcementChannel = guild.channels.cache.find(ch => ch.name === config.announcementChannelName);
+    if (!announcementChannel) return console.error("Announcement channel not found for activity scan.");
 
-    const announcementChannel = guild.channels.cache.find(
-        ch => ch.name === config.announcementChannelName && ch.isTextBased()
-    );
-    if (!announcementChannel) {
-        console.error(`Announcement channel #${config.announcementChannelName} not found. Scan aborted.`);
-        return;
-    }
-
-    await announcementChannel.send(`📢 **Activity Scan Started!** Checking message counts from the last ${config.scanIntervalDays} days in #${config.activityChannelName}.`);
-
-    const inactiveUserIds = [];
-    const activeUserIds = [];
+    await announcementChannel.send(`📢 **Pruning Activity Scan Started!** Checking message counts for all non-moderator members.`).catch(console.error);
+    const inactiveUserIds = []; const activeUserIds = [];
 
     for (const userId in botData.users) {
-        try {
-            await guild.members.fetch(userId); // Check if member still in server
-            if (botData.users[userId].messageCount <= config.messageThreshold) {
-                inactiveUserIds.push(userId);
-            } else {
-                activeUserIds.push(userId);
-            }
-        } catch (error) {
-            console.log(`User ${botData.users[userId].username} (ID: ${userId}) not found in guild, removing from activity data.`);
-            delete botData.users[userId];
+        const member = await guild.members.fetch(userId).catch(() => null);
+        if (!member) { delete botData.users[userId]; continue; }
+        if (await isModerator(member)) continue;
+
+        if ((botData.users[userId].messageCount || 0) <= config.messageThreshold) {
+            inactiveUserIds.push(userId);
+        } else {
+            activeUserIds.push(userId);
         }
     }
 
     if (inactiveUserIds.length === 0) {
-        await announcementChannel.send("✅ All monitored users meet the activity criteria!");
+        await announcementChannel.send("✅ All non-moderator users meet pruning activity criteria!").catch(console.error);
     } else {
-        await announcementChannel.send(`🔍 Found ${inactiveUserIds.length} user(s) with low activity (<= ${config.messageThreshold} messages). Initiating polls...`);
+        await announcementChannel.send(`🔍 Found ${inactiveUserIds.length} user(s) with low activity for pruning. Initiating polls...`).catch(console.error);
         for (const userId of inactiveUserIds) {
-            await createKickPoll(guild, announcementChannel, userId, botData.users[userId].username);
+            await createKickPoll(guild, announcementChannel, userId, botData.users[userId].username, `Low message count: ${botData.users[userId].messageCount || 0}`);
         }
     }
+    if (activeUserIds.length > 0) { /* Announce active users logic */ }
 
-    if (activeUserIds.length > 0) {
-        const activeUserMentions = activeUserIds.map(id => `<@${id}>`).join(', ');
-        const message = `🎉 The following users have met the activity criteria and continue to enjoy full access: ${activeUserMentions}`;
-        const MAX_LENGTH = 1950;
-        if (message.length > MAX_LENGTH) {
-            for (let i = 0; i < message.length; i += MAX_LENGTH) {
-                const chunk = message.substring(i, Math.min(i + MAX_LENGTH, message.length));
-                await announcementChannel.send(chunk);
-            }
-        } else {
-           await announcementChannel.send(message);
-        }
-    }
-
-    console.log("Resetting message counts for the next period...");
-    for (const userId in botData.users) {
-        botData.users[userId].messageCount = 0; // Only reset messageCount
-    }
-
-    botData.lastScanTimestamp = Date.now();
-    saveData();
-    console.log("Activity scan completed. Next scan in " + config.scanIntervalDays + " days.");
-    await announcementChannel.send(`🏁 Activity scan and necessary actions completed. Message counts have been reset for the next period.`);
+    console.log("Resetting message counts (for pruning)...");
+    for (const userId in botData.users) { if (botData.users[userId]) botData.users[userId].messageCount = 0; }
+    botData.lastScanTimestamp = Date.now(); saveData();
+    console.log("Pruning activity scan completed.");
+    await announcementChannel.send(`🏁 Pruning scan completed. Message counts reset.`).catch(console.error);
 }
 
-async function createKickPoll(guild, channel, userId, username) {
-    let member;
-    try {
-        member = await guild.members.fetch(userId);
-    } catch (error) {
-        console.log(`User ${username} (ID: ${userId}) left or could not be fetched before poll.`);
-        delete botData.users[userId];
-        saveData();
-        return;
+async function performVerificationScan() {
+    console.log("Starting new member verification scan...");
+    const guild = client.guilds.cache.get(config.guildId);
+    if (!guild) return console.error("Guild not found for verification scan.");
+    const verificationPollChannel = guild.channels.cache.find(ch => ch.name === config.verificationPollChannelName);
+    if (!verificationPollChannel) return console.error("Verification poll channel not found.");
+
+    await verificationPollChannel.send(`📢 **New Member Verification Scan Started!**`).catch(console.error);
+    const eligibleForVerificationPoll = [];
+    const verificationPeriodMs = config.verificationPollDays * 24 * 60 * 60 * 1000;
+
+    for (const userId in botData.users) {
+        const user = botData.users[userId];
+        const member = await guild.members.fetch(userId).catch(() => null);
+        if (!member || user.isVerified || await isModerator(member) || !user.joinTimestamp) continue;
+        if ((Date.now() - user.joinTimestamp >= verificationPeriodMs) && (user.verificationMessages || 0) >= config.verificationMessageThreshold) {
+            eligibleForVerificationPoll.push(userId);
+        }
     }
-    
-    if (member.id === client.user.id || member.id === guild.ownerId) {
-        console.log(`Skipping poll for ${username} (bot or server owner).`);
-        return;
+
+    if (eligibleForVerificationPoll.length === 0) {
+        await verificationPollChannel.send("✅ No new members currently eligible for a verification poll.").catch(console.error);
+    } else {
+        await verificationPollChannel.send(`🔍 Found ${eligibleForVerificationPoll.length} unverified member(s) eligible. Initiating polls...`).catch(console.error);
+        for (const userId of eligibleForVerificationPoll) {
+            await createVerificationPoll(guild, verificationPollChannel, userId, botData.users[userId].username);
+        }
     }
+    botData.lastVerificationScanTimestamp = Date.now(); saveData();
+    console.log("New member verification scan completed.");
+}
+
+async function createKickPoll(guild, channel, userId, username, reason = `Low activity`) {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) { delete botData.users[userId]; saveData(); return; }
+    if (await isModerator(member) || member.id === client.user.id || member.id === guild.ownerId) return;
     if (guild.members.me && member.roles.highest.position >= guild.members.me.roles.highest.position) {
-        console.log(`Skipping poll for ${username} (higher/equal role). Cannot kick.`);
-        await channel.send(`⚠️ Cannot create kick poll for ${member.user.tag} as they have a role higher than or equal to mine.`);
-        return;
+        await channel.send(`⚠️ Cannot create kick poll for ${member.user.tag} (higher/equal role).`).catch(console.error); return;
     }
 
-    const pollEmbed = new EmbedBuilder()
-        .setColor(0xFF0000)
-        .setTitle(`Kick Poll: ${username}`)
-        .setDescription(`User ${member.user.tag} has had ${botData.users[userId]?.messageCount || 0} messages in #${config.activityChannelName} in the last ${config.scanIntervalDays} days (threshold is ${config.messageThreshold}).\n\nShould they be kicked for inactivity?`)
+    const pollEmbed = new EmbedBuilder().setColor(0xFF0000).setTitle(`Kick Poll: ${username}`)
+        .setDescription(`User ${member.user.tag}. Reason: **${reason}** (e.g., messages: ${botData.users[userId]?.messageCount || 'N/A'}).\n\nShould they be kicked?`)
         .addFields({ name: 'React to Vote', value: '✅ = Yes, Kick\n❌ = No, Keep' })
-        .setFooter({ text: `Poll ends in ${config.pollDurationHours} hours.` })
-        .setTimestamp();
-
+        .setFooter({ text: `Poll ends in ${config.pollDurationHours} hours.` }).setTimestamp();
     try {
         const pollMessage = await channel.send({ embeds: [pollEmbed] });
-        await pollMessage.react('✅');
-        await pollMessage.react('❌');
-
-        const filter = (reaction, user) => ['✅', '❌'].includes(reaction.emoji.name) && !user.bot;
-        const collector = pollMessage.createReactionCollector({ filter, time: config.pollDurationHours * 60 * 60 * 1000 });
-
-        collector.on('end', async collected => {
-            const yesVotes = collected.get('✅')?.count || 0; // Actual user votes (bot's reaction is not counted by filter)
-            const noVotes = collected.get('❌')?.count || 0;
-
-            let resultMessage = `Poll for ${member.user.tag} ended. Results:\n✅ Yes votes: ${yesVotes}\n❌ No votes: ${noVotes}\n\n`;
-
-            const currentMember = await guild.members.fetch(userId).catch(() => null);
-            if (!currentMember) {
-                resultMessage += `${member.user.tag} left the server before the poll concluded.`;
-                await channel.send(resultMessage);
-                delete botData.users[userId];
-                saveData();
-                return;
-            }
-
-            const totalVotes = yesVotes + noVotes;
-            if (totalVotes === 0) {
-                resultMessage += "No votes were cast. No action will be taken.";
-            } else if (yesVotes / totalVotes >= config.pollPassThreshold && yesVotes > noVotes) {
-                resultMessage += `**Poll passed!** Kicking ${member.user.tag} for inactivity.`;
-                try {
-                    await member.kick(`Kicked due to inactivity poll (Messages: ${botData.users[userId]?.messageCount || 'N/A'}, Threshold: ${config.messageThreshold}).`);
-                    resultMessage += `\n✅ ${member.user.tag} has been kicked.`;
-                    delete botData.users[userId];
-                    saveData();
-                } catch (kickError) {
-                    console.error(`Failed to kick ${member.user.tag}:`, kickError);
-                    resultMessage += `\n⚠️ **Failed to kick ${member.user.tag}.** I might lack permissions or they have a higher role.`;
-                }
-            } else {
-                resultMessage += `**Poll did not pass.** ${member.user.tag} will not be kicked.`;
-            }
-            await channel.send(resultMessage);
+        await pollMessage.react('✅'); await pollMessage.react('❌');
+        const collector = pollMessage.createReactionCollector({
+            filter: (reaction, user) => ['✅', '❌'].includes(reaction.emoji.name) && !user.bot,
+            time: config.pollDurationHours * 60 * 60 * 1000
         });
-
-    } catch (error) {
-        console.error(`Error creating poll for ${username}:`, error);
-        await channel.send(`⚠️ Could not create a poll for ${username}. Check console for errors.`);
-    }
+        collector.on('end', async collected => {
+            const yesVotes = collected.get('✅')?.count || 0; const noVotes = collected.get('❌')?.count || 0;
+            let resultMessage = `Kick poll for ${member.user.tag} (Reason: ${reason}) ended.\n✅ Yes: ${yesVotes}, ❌ No: ${noVotes}\n\n`;
+            const currentMember = await guild.members.fetch(userId).catch(() => null);
+            if (!currentMember) { resultMessage += `${member.user.tag} left.`; await channel.send(resultMessage).catch(console.error); delete botData.users[userId]; saveData(); return; }
+            const totalVotes = yesVotes + noVotes;
+            if (totalVotes === 0) { resultMessage += "No votes. No action."; }
+            else if (yesVotes / totalVotes >= config.pollPassThreshold && yesVotes > noVotes) {
+                resultMessage += `**Poll passed!** Kicking ${member.user.tag}.`;
+                try {
+                    await member.kick(`Kicked via poll. Reason: ${reason}. Votes ${yesVotes}Y/${noVotes}N.`);
+                    resultMessage += `\n✅ ${member.user.tag} kicked.`; delete botData.users[userId]; saveData();
+                } catch (kickError) { resultMessage += `\n⚠️ Failed to kick: ${kickError.message}`; }
+            } else { resultMessage += `**Poll failed.** ${member.user.tag} not kicked.`; }
+            await channel.send(resultMessage).catch(console.error);
+        });
+    } catch (error) { console.error(`Error creating kick poll for ${username}:`, error); }
 }
 
-// --- LOGIN ---
-if (!config.token || config.token === "YOUR_DISCORD_BOT_TOKEN") {
-    console.error("CRITICAL: Bot token is not configured in config.json!");
+async function createVerificationPoll(guild, channel, userId, username) {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return;
+    if (await isModerator(member) || botData.users[userId]?.isVerified) return;
+
+    const userData = botData.users[userId];
+    const pollEmbed = new EmbedBuilder().setColor(0x00FF00).setTitle(`Verification Poll: ${username}`)
+        .setDescription(`User ${member.user.tag} joined ${formatTimeAgo(userData?.joinTimestamp)} and has **${userData?.verificationMessages || 0}** messages in #${config.activityChannelName} (threshold: ${config.verificationMessageThreshold}).\n\nGrant full access?`)
+        .addFields({ name: 'React to Vote', value: `✅ = Yes, Grant Access\n❌ = No, Keep Restricted` })
+        .setFooter({ text: `Poll ends in ${config.verificationPollDurationHours} hours.` }).setTimestamp();
+    try {
+        const pollMessage = await channel.send({ embeds: [pollEmbed] });
+        await pollMessage.react('✅'); await pollMessage.react('❌');
+        const collector = pollMessage.createReactionCollector({
+            filter: (reaction, user) => ['✅', '❌'].includes(reaction.emoji.name) && !user.bot,
+            time: config.verificationPollDurationHours * 60 * 60 * 1000
+        });
+        collector.on('end', async collected => {
+            const yesVotes = collected.get('✅')?.count || 0; const noVotes = collected.get('❌')?.count || 0;
+            let resultMessage = `Verification poll for ${member.user.tag} ended.\n✅ Yes: ${yesVotes}, ❌ No: ${noVotes}\n\n`;
+            const currentMember = await guild.members.fetch(userId).catch(() => null);
+            if (!currentMember) { resultMessage += `${member.user.tag} left.`; await channel.send(resultMessage).catch(console.error); return; }
+            const totalVotes = yesVotes + noVotes;
+            if (totalVotes === 0) { resultMessage += "No votes. No action."; }
+            else if (yesVotes / totalVotes >= config.verificationPollPassThreshold && yesVotes > noVotes) {
+                if (client.verifiedMemberRole) await currentMember.roles.add(client.verifiedMemberRole).catch(e => console.error("Error adding verified role:", e));
+                if (client.newMemberRole) await currentMember.roles.remove(client.newMemberRole).catch(e => console.error("Error removing new member role:", e));
+                botData.users[userId].isVerified = true; saveData();
+                resultMessage += `**Poll passed!** ${member.user.tag} verified.`;
+            } else { resultMessage += `**Poll failed.** ${member.user.tag} not verified.`; }
+            await channel.send(resultMessage).catch(console.error);
+        });
+    } catch (error) { console.error(`Error creating verification poll for ${username}:`, error); }
+}
+
+if (!config.token || config.token === "YOUR_DISCORD_BOT_TOKEN" || !config.guildId || config.guildId === "YOUR_SERVER_ID_HERE") {
+    console.error("CRITICAL: Bot token or guildId is not configured properly in " + CONFIG_PATH);
     process.exit(1);
 }
-if (!config.guildId || config.guildId === "YOUR_SERVER_ID_HERE") {
-    console.error("CRITICAL: guildId is not configured in config.json!");
-    process.exit(1);
-}
-
 client.login(config.token);
