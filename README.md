@@ -1,129 +1,177 @@
-# Discord Activity, Verification & Pruning Bot
+# Discord Moderation & Utility Bot
 
-This Node.js Discord bot implements a comprehensive system for managing new member verification, tracking user activity, and pruning inactive members through configurable rules and polling systems. It offers moderator commands for manual control and reporting.
+This Discord bot provides a suite of moderation tools, utility commands, activity tracking, automated polling, and AI integrations for your server.
 
-## Core Features
+## Features
 
-*   **New Member Verification:**
-    *   Automatically assigns a "New Member" role to new joins, restricting them to a specified channel (e.g., `#general`).
-    *   Tracks messages of new members in the activity channel.
-    *   Periodically scans unverified members. If they meet configured criteria (days on server, messages sent), a poll is initiated in a specified channel to grant them a "Verified Member" role, giving full server access.
-*   **Activity Tracking & Pruning:**
-    *   Monitors messages in the configured activity channel for all members.
-    *   Periodically scans for members (excluding moderators) whose message count falls below a threshold within a set period.
-    *   Initiates individual kick polls for these inactive members.
-*   **Moderator Commands:**
-    *   `!allow [days messages]` / `!allow`: Manually verifies members, granting them the "Verified Member" role. Can target specific criteria or all eligible unverified members.
-    *   `!deny <days> <messages>`: Manually kicks unverified members who have been on the server for `<days>` and have sent `<= <messages>` messages.
-    *   `!kickpollinactive [days_silent]`: Initiates kick polls for members (excluding moderators) who haven't sent a message in the activity channel for a specified number of days.
-    *   `!activity`: Displays a paginated list of all server members, their last activity time in the monitored channel, verification status, and verification message count.
-    *   `!roles`: Displays a paginated list of all server members and their assigned roles.
-*   **Moderator Exemption:** Users with a configured "Moderator" role (or Administrator permission) are exempt from automatic scans, polls, and kick actions. Moderator-only commands are restricted.
-*   **Configurable & Persistent:**
-    *   Most settings (role names, channel names, thresholds, intervals) are managed via a `config.json` file.
-    *   Bot accepts a config file path as a command-line argument.
-    *   User data (message counts, join times, verification status, last activity) is saved to `data.json`.
-*   **Global Command Listening:** Bot listens for commands in any channel within the configured guild.
-
-## Prerequisites
-
-*   [Node.js](https://nodejs.org/) (v16.9.0 or newer recommended)
-*   [npm](https://www.npmjs.com/)
-*   A Discord Bot Application
+*   **Activity Tracking**: Monitors user messages in a designated channel to help with verification and pruning.
+*   **Automated Verification**:
+    *   New members are assigned a "Guest" role.
+    *   After meeting message count and server tenure thresholds, a poll is started to grant them a "Verified" role.
+*   **Automated Pruning**:
+    *   Periodically scans user activity.
+    *   Initiates kick polls for users below a message threshold or those inactive for a set duration.
+*   **YouTube Watch Polls**:
+    *   Logs YouTube links posted in the server.
+    *   Allows manual creation of polls for videos from specific channels or all channels based on criteria (age, count).
+    *   Automated weekly polls for recently shared videos.
+    *   Daily announcements for upcoming watch events.
+*   **Knowledge Repository**:
+    *   Copies messages to a designated "repository" channel based on:
+        *   A specific "troll" emoji reaction.
+        *   A threshold of reactions from Verified/Moderator users.
+*   **Reaction Roles**:
+    *   Allows users to self-assign roles by reacting to a specific message.
+    *   Announces when a user joins a role group.
+*   **Tagging System**: Verified users and moderators can create, remove, and display simple key-value tags.
+*   **AI Integration (Google Gemini)**:
+    *   `!positivity` command for uplifting messages.
+    *   `!ai <prompt>` command for general AI responses.
+*   **Moderator Commands**: Includes manual verification/denial, role display, config management, and more.
+*   **Configurable**: Most features are configurable via `config.json`.
 
 ## Setup
 
-1.  **Project Files:**
-    *   Save the bot code as `bot.js`.
-    *   Create your `config.json` (see example below).
-
-2.  **Install Dependencies:**
+1.  **Clone the Repository**:
     ```bash
-    npm install discord.js
+    git clone <your-repo-url>
+    cd <your-repo-name>
+    ```
+2.  **Install Dependencies**:
+    ```bash
+    npm install
+    ```
+3.  **Configure the Bot**:
+    *   Rename `config.example.json` to `config.json`.
+    *   Fill in the `config.json` with your server's specific details, API keys, and role/channel names. See the "Configuration (`config.json`)" section below for details on each option.
+    *   **Crucial**:
+        *   Set your `token` (Discord Bot Token).
+        *   Set your `guildId` (Your Discord Server ID).
+        *   If using Reaction Roles, create the roles in Discord, post a message in your `rolesChannelName`, copy its ID, and put it in `rolesChannelMessageID`.
+4.  **Create Roles and Channels**:
+    *   Ensure all roles mentioned in `config.json` (e.g., `moderatorRoleName`, `newMemberRoleName`, `verifiedMemberRoleName`, reaction roles) exist in your Discord server.
+    *   Ensure the bot's role is placed higher in the role hierarchy than any roles it needs to manage (assign/remove).
+    *   Ensure all channels mentioned (e.g., `activityChannelName`, `announcementChannelName`, `verificationPollChannelName`, `autoPollVideoChannelName`, `knowledgeCopyToChannelName`, `rolesChannelName`, individual reaction role `announceChannelName`s) exist.
+5.  **Permissions**:
+    *   The bot requires appropriate permissions to function. Key permissions include:
+        *   `View Channels`, `Send Messages`, `Embed Links`, `Attach Files`, `Read Message History` (in relevant channels)
+        *   `Manage Roles`
+        *   `Kick Members`
+        *   `Add Reactions`
+        *   `Administrator` (can simplify setup but grant with caution).
+6.  **Run the Bot**:
+    ```bash
+    node bot.js
+    ```
+    Or, if you prefer, using a process manager like PM2:
+    ```bash
+    pm2 start bot.js --name "my-discord-bot"
     ```
 
-3.  **Discord Bot Application:**
-    *   Go to the [Discord Developer Portal](https://discord.com/developers/applications).
-    *   Create/select your application.
-    *   Navigate to the **"Bot"** tab:
-        *   Copy the **Bot Token**.
-        *   Enable **Privileged Gateway Intents**:
-            *   `SERVER MEMBERS INTENT`
-            *   `MESSAGE CONTENT INTENT`
-        *   Click **"Save Changes"**.
+## Commands
 
-4.  **Configure `config.json`:**
-    *   Create `config.json` in your project directory (or specify a path when running).
-    *   Use the example structure provided (see "Full `config.json` (Example)" above) and fill in:
-        *   `token`: Your Bot Token.
-        *   `guildId`: Your Server ID (Enable Developer Mode in Discord: User Settings > Advanced, then right-click server icon > Copy ID).
-        *   Role Names (`newMemberRoleName`, `verifiedMemberRoleName`, `moderatorRoleName`): **Must match exactly** (case-sensitive) the names of the roles in your Discord server.
-        *   Channel Names (`activityChannelName`, `announcementChannelName`, `verificationPollChannelName`): Exact names of the channels.
-        *   Adjust thresholds and intervals as desired.
+### Public Commands
 
-5.  **Discord Server Role & Channel Setup:**
-    *   **Roles:**
-        *   Create the roles specified in `config.json`: `New Member`, `Verified Member`, `Moderator`.
-        *   **`@everyone` Role:** In Server Settings > Roles > `@everyone`, **DISABLE `View Channel` permission for ALL channels/categories.** This ensures new users are restricted.
-        *   **`New Member` Role:**
-            *   Grant `View Channel`, `Send Messages`, `Read Message History` **ONLY** for your `activityChannelName` (e.g., `#general`) and your general voice channel.
-            *   For all other channels/categories, explicitly **DISABLE `View Channel`** for this role.
-        *   **`Verified Member` Role:** Grant all permissions desired for full members (e.g., view all public channels).
-        *   **`Moderator` Role:** Grant permissions appropriate for moderators, including "Manage Server" if they need to manage bot settings or other server aspects. The bot uses this role name to identify moderators for command access and exemptions.
-    *   **Channels:** Create the channels specified in `config.json` if they don't exist.
+*   `!activity`: Shows a report of user activity in the designated `activityChannelName`.
+*   `!watch`: Shows the time until the next scheduled YouTube video poll.
+*   `!positivity`: Get an uplifting positive message from the AI (if Gemini API is configured).
+*   `!commands` / `!help`: Shows this help message.
+*   `!ai <prompt>`: Sends your `<prompt>` to the AI and gets a response (if Gemini API is configured).
 
-6.  **Invite the Bot:**
-    *   In the Developer Portal (OAuth2 > URL Generator):
-        *   **SCOPES:** Check `bot`.
-        *   **BOT PERMISSIONS:** Select `View Channels`, `Send Messages`, `Embed Links`, `Read Message History`, `Add Reactions`, `Kick Members`, `Manage Roles`.
-    *   Copy the generated URL and use it to invite the bot to your server.
-    *   Ensure the bot's role is high enough in the hierarchy to manage roles (add/remove `New Member`/`Verified Member`) and kick members (below moderators/admins).
+### Tagging System (Requires Verified/Moderator role)
 
-## Running the Bot
+*   `+tagName <value>`: Adds or updates a tag. (Prefix configurable via `tagAddPrefix`)
+*   `-tagName`: Removes a tag. (Prefix configurable via `tagRemovePrefix`)
+*   `~tagName`: Shows a specific tag. (Prefix configurable via `tagShowPrefix`)
+*   `~`: Lists all available tags. (Prefix configurable via `tagShowPrefix`)
 
-1.  Open your terminal in the project directory.
-2.  Run:
-    ```bash
-    node bot.js [path/to/your/config.json]
-    ```
-    *   If `[path/to/your/config.json]` is omitted, it defaults to `config.json` in the same directory as `bot.js`.
-    *   Example: `node bot.js` or `node bot.js server_configs/main_config.json`
+### Moderator Commands (Requires Moderator role or Administrator permission)
 
-## Commands (Default Prefix: `!`)
+*   `!allow [days_member messages_count]`: Manually verifies members. With no arguments, verifies all eligible "New Members". With arguments, verifies members who joined at least `days_member` ago and have at least `messages_count`.
+*   `!deny <days_member> <max_messages>`: Kicks unverified "New Members" who joined at least `days_member` ago and have `max_messages` or fewer.
+*   `!kickpollinactive [days_silent]`: Initiates kick polls for users silent for `[days_silent]` (defaults to `kickPollSilentDaysThreshold`).
+*   `!roles`: Displays the roles of all non-bot members.
+*   `!watchpoll <criteria>`: Creates a poll for YouTube videos posted in *the current channel*.
+    *   Criteria: `N` (number of days ago), `~N` (last N unique links), `mm/dd/yyyy` (specific date).
+*   `!allpoll <criteria>`: Creates a poll for YouTube videos posted in *any channel*. Criteria are the same as `!watchpoll`.
+*   `!vids <criteria>`: Lists YouTube videos from *the current channel*. Criteria are the same as `!watchpoll`.
+*   `!allvids <criteria>`: Lists YouTube videos from *any channel*. Criteria are the same as `!watchpoll`.
+*   `!set [setting_name] [new_value]`: Views or updates a bot configuration setting.
+    *   `!set`: Lists all modifiable settings and their current values.
+    *   `!set <setting_name> <new_value>`: Updates the specified setting. Some changes may require a bot restart.
 
-**Moderator Only Commands:**
+## Configuration (`config.json`)
 
-*   **`allow [days messages]`**: Manually verifies members who have been on the server for at least `[days]` and sent at least `[messages]` in the activity channel.
-    *   Example: `!allow 7 20`
-*   **`allow`**: Manually verifies ALL currently unverified members who have the "New Member" role.
-*   **`deny <days> <messages>`**: Kicks unverified "New Members" who joined at least `<days>` ago and have `<= <messages>` in the activity channel.
-    *   Example: `!deny 14 5`
-*   **`kickpollinactive [days_silent]`**: Initiates kick polls for any non-moderator member silent in the activity channel for `[days_silent]` (or `config.kickPollSilentDaysThreshold` if `[days_silent]` is omitted).
-    *   Example: `!kickpollinactive 30`
-*   **`roles`**: Displays a list of all server members and their assigned roles.
+Below is an explanation of each option available in the `config.json` file.
 
-**Public Commands (Can be restricted in code if needed):**
+*   `token`: **(Required)** Your Discord Bot's unique token. **Keep this secret!**
+*   `prefix`: The prefix for bot commands (e.g., "!" results in `!help`).
+*   `guildId`: **(Required)** The ID of the Discord server (guild) this bot will operate in.
+*   `activityChannelName`: The name of the channel where user activity (messages) is primarily tracked for verification and pruning scans.
+*   `announcementChannelName`: The name of the channel used for general bot announcements, such as scan starts/completions, manual verifications/kicks.
+*   `moderatorRoleName`: The exact name of the role that grants moderator privileges for bot commands.
+*   `messageThreshold`: The minimum number of messages a user must send in the `activityChannelName` within a `scanIntervalDays` period to not be considered for pruning due to low activity.
+*   `scanIntervalDays`: How often (in days) the bot scans for inactive users to potentially prune.
+*   `pollDurationHours`: Default duration (in hours) for kick polls and other general polls.
+*   `pollPassThreshold`: The minimum percentage (0.0 to 1.0) of "Yes" votes required for a poll to pass (e.g., 0.6 for 60%).
+*   `kickPollSilentDaysThreshold`: The number of days a user must be silent (no messages in `activityChannelName`) to be considered for a kick poll by the `!kickpollinactive` command or automated silent user pruning (if implemented).
+*   `newMemberRoleName`: The name of the role automatically assigned to new members joining the server.
+*   `verifiedMemberRoleName`: The name of the role granted to members after passing the verification process.
+*   `verificationPollDays`: The minimum number of days a new member must be in the server before being eligible for an automated verification poll.
+*   `verificationMessageThreshold`: The minimum number of messages a new member must send in the `activityChannelName` to be eligible for an automated verification poll.
+*   `verificationPollChannelName`: The name of the channel where automated verification polls are posted.
+*   `verificationPollDurationHours`: Duration (in hours) for verification polls.
+*   `verificationPollPassThreshold`: Pass threshold (0.0 to 1.0) for verification polls.
+*   `youtubeLinkHistoryDays`: How many days of YouTube link history the bot should keep for polling purposes. Older links are pruned.
+*   `watchPollDurationHours`: Duration (in hours) specifically for YouTube watch polls created by `!watchpoll` or `!allpoll`.
+*   `youtubeApiKey`: Your Google YouTube Data API v3 key. Used for fetching video titles more reliably (optional, fallback exists). **Keep this secret!**
+*   `autoPollVideoChannelName`: The name of the channel where automated weekly YouTube watch polls will be posted. Also the channel from which videos are sourced for these auto-polls by default.
+*   `autoPollVideoCronTime`: A cron string defining when the automated YouTube poll runs (e.g., `"0 18 * * 5"` for every Friday at 6 PM).
+*   `autoPollVideoDaysPast`: How many days of video history (from `autoPollVideoChannelName`) to consider for the automated poll (e.g., "7" for the last 7 days).
+*   `cronTimezone`: The IANA timezone for cron jobs (e.g., `"America/New_York"`).
+*   `tagAddPrefix`, `tagRemovePrefix`, `tagShowPrefix`: Prefixes for tag management commands.
+*   `tagDataFileName`: (Bot internal) Name of the file where tag data is stored (e.g., `tags.json`).
+*   `watchEventMessage`: The base message used for announcing upcoming watch events/polls.
+*   `announceWatchEventDaily`: `true` or `false`. Whether to announce the next watch event daily.
+*   `dailyAnnouncementTime`: Time for the daily watch event announcement (e.g., `"12:00"` for noon), in the `cronTimezone`.
+*   `dailyAnnouncementChannelName`: Channel for daily watch event announcements.
+*   `geminiApiUrl`, `geminiApiVersion`, `geminiModelAction`: Configuration for Google Gemini API (for `!ai` and `!positivity`).
+*   `geminiApiKey`: Your Google Gemini API Key. **Keep this secret!**
+*   `geminiPositivePrompt`, `geminiHeartReactionPrompt`, `geminiIncludeInPrompts`: Prompts used for Gemini AI features.
+*   `enableGeminiHeartReaction`: `true` or `false`. (Feature was present but not used in the latest code request, might be for future use).
+*   `knowledgeCopyToChannelName`: Name of the channel where messages are copied for the "knowledge repository".
+*   `knowledgeCopyEmojisMin`: Minimum number of unique Verified/Moderator users reacting to a message to trigger a copy to the knowledge repository.
+*   `knowledgeCopyWhenEmoji`: The specific emoji that, when reacted with, immediately copies a message to the knowledge repository.
+*   `rolesChannelName`: Name of the channel containing the message for reaction roles.
+*   `rolesChannelMessageID`: The ID of the specific message in `rolesChannelName` that users react to for roles. **You must set this manually after posting the message.**
+*   `reactionRoles`: An array of objects defining emoji-to-role mappings for the reaction role system. Each object should have:
+    *   `emoji`: The emoji string (e.g., `"🌸"` or a custom emoji ID like `"<:custom:12345>"`).
+    *   `roleName`: The exact name of the Discord role to assign/remove.
+    *   `announceChannelName`: (Optional) The name of the channel to announce when a user gets this role.
 
-*   **`activity`**: Displays a list of members, their last activity time in the monitored channel, verification status, and verification message count.
+## Contributing
 
-## `data.json` File
+Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
 
-This file is automatically created and managed by the bot. It stores:
-*   `lastScanTimestamp`: Timestamp of the last pruning scan.
-*   `lastVerificationScanTimestamp`: Timestamp of the last new member verification scan.
-*   `users`: An object where keys are user IDs. Each user object contains:
-    *   `messageCount`: Messages in `activityChannelName` for current pruning period (resets).
-    *   `username`: Discord username.
-    *   `lastMessageTimestamp`: Timestamp of last message in `activityChannelName`.
-    *   `joinTimestamp`: Timestamp of when the user joined the server (or when bot first saw them).
-    *   `isVerified`: Boolean, `true` if they have the "Verified Member" role.
-    *   `verificationMessages`: Total messages in `activityChannelName` while unverified (used for verification criteria).
+## License
+MIT License
 
-**Do not manually edit `data.json` unless absolutely necessary.**
+Copyright (c) 2025 Shane Britt
 
-## Troubleshooting
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-*   **"Guild ... not found" / Role/Channel not found:** Double-check names in `config.json` (case-sensitive!) and ensure the `guildId` is correct. Verify the bot is in the server.
-*   **Permissions Errors:** Ensure the bot's role has the necessary permissions (`Manage Roles`, `Kick Members`) and is high enough in the role hierarchy.
-*   **Commands not working:** Check `prefix` in `config.json`. Ensure Privileged Intents are enabled. Check console for errors.
-*   **Users not being restricted:** Crucially, ensure the `@everyone` role has `View Channel` disabled for all channels except those you explicitly want everyone (even without roles) to see. The `New Member` role should then grant specific access.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
