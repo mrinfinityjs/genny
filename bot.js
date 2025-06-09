@@ -182,7 +182,8 @@ let verificationScanIntervalId;
 
 client.once('ready', async () => {
     console.log(`Logged in as ${client.user.tag}!`);
-    client.copiedToKnowledge = new Set(); // Initialize set for tracking copied messages
+    client.copiedToKnowledge = new Set();
+    client.translatedMessages = new Set(); // For translation feature
 
     const guild = client.guilds.cache.get(config.guildId);
     if (!guild) { console.error(`CRITICAL: Guild with ID ${config.guildId} not found.`); }
@@ -193,7 +194,6 @@ client.once('ready', async () => {
         if (!client.newMemberRole) console.warn(`New Member Role "${config.newMemberRoleName}" not found!`);
         if (!client.verifiedMemberRole) console.warn(`Verified Member Role "${config.verifiedMemberRoleName}" not found!`);
 
-        // Validate Reaction Role Config
         if (!config.rolesChannelName || !config.rolesChannelMessageID || !Array.isArray(config.reactionRoles)) {
             console.warn("[ReactionRoles] Feature not fully configured. Missing 'rolesChannelName', 'rolesChannelMessageID', or 'reactionRoles' (must be an array) in config.json.");
         } else {
@@ -201,6 +201,11 @@ client.once('ready', async () => {
                  console.warn("[ReactionRoles] 'rolesChannelMessageID' is still set to placeholder. Update it with your message ID.");
             }
             console.log(`[ReactionRoles] System configured for channel "${config.rolesChannelName}" and message ID "${config.rolesChannelMessageID}".`);
+        }
+        if (!config.translateEmoji || !config.translateToLanguage) {
+            console.warn("[Translate] Feature not fully configured. Missing 'translateEmoji' or 'translateToLanguage' in config.json.");
+        } else {
+            console.log(`[Translate] System configured to translate on '${config.translateEmoji}' to '${config.translateToLanguage}'.`);
         }
     }
     loadData();
@@ -321,16 +326,14 @@ client.on('guildMemberAdd', async member => {
 // --- REACTION ROLE HANDLER ---
 async function handleReactionRole(reaction, user, action) {
     if (!config.rolesChannelName || !config.rolesChannelMessageID || !Array.isArray(config.reactionRoles) || config.rolesChannelMessageID === "YOUR_MESSAGE_ID_HERE") {
-        // console.log("[ReactionRoles] System not configured or message ID is placeholder. Skipping.");
         return;
     }
     if (reaction.message.id !== config.rolesChannelMessageID) return;
-    if (reaction.message.channel.name !== config.rolesChannelName) return; // Check channel name as well
+    if (reaction.message.channel.name !== config.rolesChannelName) return;
 
     const emojiIdentifier = reaction.emoji.id ? reaction.emoji.toString() : reaction.emoji.name;
-
     const roleConfig = config.reactionRoles.find(rc => rc.emoji === emojiIdentifier);
-    if (!roleConfig) return; // Not a configured reaction role emoji
+    if (!roleConfig) return;
 
     const guild = reaction.message.guild;
     if (!guild) return;
@@ -352,7 +355,6 @@ async function handleReactionRole(reaction, user, action) {
             if (!member.roles.cache.has(role.id)) {
                 await member.roles.add(role);
                 console.log(`[ReactionRoles] Added role "${role.name}" to ${member.user.tag}.`);
-
                 if (roleConfig.announceChannelName) {
                     const announceChannel = guild.channels.cache.find(ch => ch.name === roleConfig.announceChannelName && ch.isTextBased());
                     if (announceChannel) {
@@ -366,13 +368,11 @@ async function handleReactionRole(reaction, user, action) {
             if (member.roles.cache.has(role.id)) {
                 await member.roles.remove(role);
                 console.log(`[ReactionRoles] Removed role "${role.name}" from ${member.user.tag}.`);
-                // Optional: Announce removal if desired in the future
-                // if (roleConfig.announceChannelName) { ... }
             }
         }
     } catch (error) {
         console.error(`[ReactionRoles] Failed to ${action} role "${role.name}" for ${member.user.tag}:`, error);
-        if (error.code === 50013) { // Missing permissions
+        if (error.code === 50013) {
              try {
                 const owner = await guild.fetchOwner();
                 if (owner) owner.send(`⚠️ **Reaction Role Error:** I tried to ${action} the role "${role.name}" for ${member.user.tag} but I lack permissions. Please check my role hierarchy and permissions.`).catch(e => console.error("Failed to DM owner about reaction role permission error:", e));
@@ -381,12 +381,10 @@ async function handleReactionRole(reaction, user, action) {
     }
 }
 
-
 // --- KNOWLEDGE REPOSITORY COPY FUNCTION ---
 async function copyMessageToKnowledge(message, targetChannel, triggerReason = "Unknown") {
     if (!message || !targetChannel) return;
     if (client.copiedToKnowledge.has(message.id)) {
-        // console.log(`[KnowledgeCopy] Message ${message.id} was already copied. Trigger: ${triggerReason}. Aborting duplicate copy.`);
         return;
     }
 
@@ -443,6 +441,54 @@ client.on('messageReactionAdd', async (reaction, user) => {
     await handleReactionRole(reaction, user, 'add');
     // End Reaction Role Logic
 
+    // --- Translation Logic ---
+    if (
+        config.translateEmoji &&
+        config.translateToLanguage &&
+        config.geminiApiKey &&
+        (reaction.emoji.name === config.translateEmoji || reaction.emoji.toString() === config.translateEmoji)
+    ) {
+        // Only trigger if it's the first instance of this specific emoji on this message
+        if (reaction.count === 1 && !client.translatedMessages.has(reaction.message.id)) {
+            if (!reaction.message.content || reaction.message.content.trim() === "") {
+                console.log(`[Translate] Message ${reaction.message.id} has no content to translate.`);
+                client.translatedMessages.add(reaction.message.id); // Mark as processed to avoid re-checks
+            } else {
+                console.log(`[Translate] Triggered translation for message ${reaction.message.id} to ${config.translateToLanguage} as it's the first '${config.translateEmoji}' reaction.`);
+                try {
+                    await reaction.message.channel.sendTyping();
+                    const prompt = `Translate this to ${config.translateToLanguage}: ${reaction.message.content}`;
+                    const translation = await geminiGen(config.geminiApiUrl, config.geminiApiVersion, config.geminiModelAction, config.geminiApiKey, prompt);
+
+                    if (translation && !translation.startsWith("My response was blocked") && !translation.startsWith("I encountered an error") && !translation.startsWith("AI API Error")) {
+                        let replyHeader = `**Translation to ${config.translateToLanguage} (for <@${reaction.message.author.id}>):**\n`;
+                        let fullReply = replyHeader + `>>> ${translation}`;
+                        const MAX_REPLY_LENGTH = 2000;
+
+                        if (fullReply.length > MAX_REPLY_LENGTH) {
+                            await reaction.message.reply(replyHeader).catch(console.error);
+                            const translationContent = `>>> ${translation}`;
+                            for (let i = 0; i < translationContent.length; i += MAX_REPLY_LENGTH) {
+                                const chunk = translationContent.substring(i, Math.min(i + MAX_REPLY_LENGTH, translationContent.length));
+                                await reaction.message.channel.send(chunk).catch(console.error); // Send subsequent chunks in channel
+                            }
+                        } else {
+                            await reaction.message.reply(fullReply).catch(console.error);
+                        }
+                    } else {
+                        console.warn(`[Translate] AI translation failed or returned an error for message ${reaction.message.id}: ${translation}`);
+                        // Optionally inform the user, but be mindful of spamming if AI frequently fails
+                        // await reaction.message.reply(`Sorry, I couldn't translate that message right now.`).catch(console.error);
+                    }
+                } catch (translateError) {
+                    console.error(`[Translate] Error during translation process for message ${reaction.message.id}:`, translateError);
+                } finally {
+                    client.translatedMessages.add(reaction.message.id); // Mark as processed after attempt
+                }
+            }
+        }
+    }
+    // End Translation Logic
 
     // --- Knowledge Copy Logic ---
     if (config.knowledgeCopyToChannelName && typeof config.knowledgeCopyEmojisMin === 'number' && config.knowledgeCopyWhenEmoji) {
@@ -456,7 +502,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
                 if (reactingEmojiString === config.knowledgeCopyWhenEmoji) {
                     console.log(`[KnowledgeCopy] Troll emoji "${config.knowledgeCopyWhenEmoji}" detected on message ${reaction.message.id} by ${user.tag}.`);
                     await copyMessageToKnowledge(reaction.message, knowledgeRepoChannel, `Troll Emoji (${config.knowledgeCopyWhenEmoji}) by ${user.tag}`);
-                    // Return here because troll emoji takes precedence and message is now copied
                     return; 
                 }
 
@@ -486,15 +531,13 @@ client.on('messageReactionAdd', async (reaction, user) => {
                     }
                     
                     if (reactingUsersWithRequiredRole.size >= minUsersForCopy) {
-                        if (!client.copiedToKnowledge.has(reaction.message.id)) { // Final check before copying
+                        if (!client.copiedToKnowledge.has(reaction.message.id)) {
                             console.log(`[KnowledgeCopy] Threshold of ${minUsersForCopy} unique verified/mod users (${reactingUsersWithRequiredRole.size} found) reached for message ${reaction.message.id}.`);
                             await copyMessageToKnowledge(reaction.message, knowledgeRepoChannel, `Threshold Met (${reactingUsersWithRequiredRole.size}/${minUsersForCopy} eligible users)`);
                         }
                     }
                 }
             }
-        } else {
-            // console.warn(`[KnowledgeCopy] Target channel "${config.knowledgeCopyToChannelName}" not found or not text-based.`);
         }
     }
     // End Knowledge Copy Logic
@@ -813,20 +856,24 @@ client.on('messageCreate', async message => {
             try { let parsedValue;
                 if(originalType==='number'){parsedValue=parseFloat(newValueRaw);if(isNaN(parsedValue))throw new Error("Invalid input: Not a valid number.");}
                 else if(originalType==='boolean'){if(args.length<2)parsedValue=!config[settingName];else if(newValueRaw.toLowerCase()==='true')parsedValue=true;else if(newValueRaw.toLowerCase()==='false')parsedValue=false;else throw new Error("Invalid input for boolean: Use 'true' or 'false'.");}
+                else if (originalType === 'object' && Array.isArray(config[settingName])) { // Handle array type for reactionRoles
+                    try { parsedValue = JSON.parse(newValueRaw); if (!Array.isArray(parsedValue)) throw new Error("Value must be a valid JSON array.");}
+                    catch (jsonErr) { throw new Error("Invalid JSON array format for this setting."); }
+                }
                 else {if(args.length<2)return message.reply(`Please provide a value for string setting "${settingName}".`).catch(console.error);parsedValue=newValueRaw;}
                 
                 const oldV = JSON.stringify(config[settingName]); config[settingName]=parsedValue; fs.writeFileSync(CONFIG_PATH,JSON.stringify(config,null,2)); 
                 console.log(`[Config Set] ${message.author.tag} changed '${settingName}' from ${oldV} to '${JSON.stringify(parsedValue)}'`);
                 
                 const criticalSchedulerSettings = ['autoPollVideoCronTime','autoPollVideoDaysPast','cronTimezone','dailyAnnouncementTime','scanIntervalDays','verificationPollDays'];
-                const roleNameSettings = ['moderatorRoleName', 'verifiedMemberRoleName', 'newMemberRoleName', 'rolesChannelName']; // Added rolesChannelName
+                const roleNameSettings = ['moderatorRoleName', 'verifiedMemberRoleName', 'newMemberRoleName', 'rolesChannelName'];
 
                 if(criticalSchedulerSettings.includes(settingName)){
                     console.log(`Config "${settingName}" changed, rescheduling tasks.`);
                     scheduleTasks();
                 }
-                if(roleNameSettings.includes(settingName) || settingName === 'reactionRoles' || settingName === 'rolesChannelMessageID'){ // Added reactionRoles and ID
-                    console.log(`Role-related config "${settingName}" changed. Bot may need restart for full effect or re-caching relevant objects.`);
+                if(roleNameSettings.includes(settingName) || settingName === 'reactionRoles' || settingName === 'rolesChannelMessageID' || settingName === 'translateEmoji' || settingName === 'translateToLanguage'){
+                    console.log(`Config "${settingName}" changed. Bot may need restart for full effect or re-caching relevant objects.`);
                     const guild = client.guilds.cache.get(config.guildId);
                     if (guild) {
                         if (settingName === 'newMemberRoleName') client.newMemberRole = guild.roles.cache.find(role => role.name === config.newMemberRoleName);
@@ -880,13 +927,14 @@ async function createYoutubeWatchPoll(channel, criteria, targetChannelIdForFilte
     const pollQuestionText=`Vote: Which video should we watch?`;
     const pollAnswers=linksForThisPoll.map(link=>{
         let title = link.title || "Untitled YouTube Video";
-        const maxPollOptionLength = 80;
+        const maxPollOptionLength = 55; // Discord Poll Option Limit (updated)
         if(title.length > maxPollOptionLength) title = title.substring(0,maxPollOptionLength-3)+"...";
         return {text: title};
     });
     
     if(pollAnswers.length===0) {
         if(originalMessage) originalMessage.reply("Strangely, no poll options could be generated from the filtered videos.").catch(console.error);
+        else if (channel) channel.send("Strangely, no poll options could be generated from the filtered videos.").catch(console.error);
         return;
     }
     if(pollAnswers.length===1) pollAnswers.push({text:"(No other distinct options found / Skip vote)"});
