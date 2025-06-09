@@ -56,5 +56,7 @@
             "roleName": "Gamers",
             "announceChannelName": "gaming"
         }
-    ]
+    ],
+    "translateEmoji": "❓",
+    "translateToLanguage": "English"
 }
