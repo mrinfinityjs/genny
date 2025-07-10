@@ -5,6 +5,7 @@ const ytdl = require('ytdl-core');
 const { CronJob } = require('cron');
 const axios = require('axios');
 const { DateTime, Duration } = require('luxon');
+const chrono = require('chrono-node'); // Library for parsing dates from text
 
 // --- CONFIGURATION ---
 const configFileArg = process.argv[2];
@@ -38,7 +39,8 @@ let botData = {
     lastVerificationScanTimestamp: 0,
     users: {},
     youtubeLinks: [],
-    tags: {}
+    tags: {},
+    reminders: [] // Added for the remindme feature
 };
 
 function loadData() {
@@ -50,6 +52,7 @@ function loadData() {
             if (!botData.users) botData.users = {};
             if (!botData.youtubeLinks) botData.youtubeLinks = [];
             if (!botData.tags) botData.tags = {};
+            if (!botData.reminders) botData.reminders = []; // Ensure reminders array exists
             if (botData.lastVerificationScanTimestamp === undefined) botData.lastVerificationScanTimestamp = 0;
             if (botData.lastScanTimestamp === undefined) botData.lastScanTimestamp = 0;
             for (const userId in botData.users) {
@@ -61,7 +64,7 @@ function loadData() {
                 if (user.messageCount === undefined) user.messageCount = 0;
                 if (user.username === undefined) user.username = "UnknownUser";
             }
-            console.log("User, link, and tag data loaded.");
+            console.log("User, link, tag, and reminder data loaded.");
             pruneOldYoutubeLinks();
         } else {
             console.log("No existing data file found. Starting fresh.");
@@ -212,6 +215,10 @@ client.once('ready', async () => {
     scheduleTasks();
     setInterval(pruneOldYoutubeLinks, 24 * 60 * 60 * 1000);
     console.log("Bot ready, initial data loaded, and tasks scheduled.");
+    
+    // Start the reminder checker
+    console.log("[Reminders] Initializing reminder checker...");
+    setInterval(checkReminders, 15000); // Check for due reminders every 15 seconds
 });
 
 function scheduleTasks() {
@@ -301,6 +308,47 @@ function unscheduleTasks() {
     if (dailyWatchAnnouncementJob) dailyWatchAnnouncementJob.stop();
     activityScanIntervalId = null; verificationScanIntervalId = null; autoYoutubePollJob = null; dailyWatchAnnouncementJob = null;
     console.log("Unscheduled existing tasks.");
+}
+
+// --- Reminder Checker ---
+// This function runs periodically to check for and send due reminders.
+async function checkReminders() {
+    const now = Date.now();
+    const dueReminders = botData.reminders.filter(r => r.triggerTimestamp <= now);
+
+    if (dueReminders.length === 0) {
+        return; // No reminders are due, do nothing.
+    }
+
+    console.log(`[Reminders] Found ${dueReminders.length} due reminder(s) to process.`);
+
+    for (const reminder of dueReminders) {
+        try {
+            const guild = await client.guilds.cache.get(reminder.guildId);
+            if (!guild) {
+                console.error(`[Reminders] Guild ${reminder.guildId} not found for a reminder.`);
+                continue; // Skip to the next reminder
+            }
+            const channel = await guild.channels.cache.get(reminder.channelId);
+            if (!channel || !channel.isTextBased()) {
+                console.error(`[Reminders] Channel ${reminder.channelId} not found or not text-based.`);
+                continue;
+            }
+
+            // The message to be sent
+            const reminderMessage = `<@${reminder.userId}>, you asked me to remind you: ${reminder.message}`;
+            
+            await channel.send(reminderMessage);
+            console.log(`[Reminders] Sent reminder to user ${reminder.userId} in channel ${reminder.channelId}.`);
+
+        } catch (error) {
+            console.error(`[Reminders] Failed to send reminder ID ${reminder.id}:`, error);
+        }
+    }
+
+    // Remove the reminders that have just been processed from the main array
+    botData.reminders = botData.reminders.filter(r => r.triggerTimestamp > now);
+    saveData(); // Save the updated list of reminders back to the file
 }
 
 client.on('guildMemberAdd', async member => {
@@ -439,7 +487,45 @@ client.on('messageReactionAdd', async (reaction, user) => {
 
     // --- Reaction Role Logic ---
     await handleReactionRole(reaction, user, 'add');
-    // End Reaction Role Logic
+    
+    // --- Message Storage/Bookmark Logic (Apple Emoji) ---
+    if (reaction.emoji.name === '🍎') {
+        const message = reaction.message;
+        const reactor = user;
+
+        console.log(`[Storage] User ${reactor.tag} reacted with 🍎 to save message ${message.id}.`);
+
+        try {
+            const postDate = DateTime.fromJSDate(message.createdAt).toFormat("MMMM d, yyyy 'at' h:mm a ZZZZ");
+            const storageEmbed = new EmbedBuilder()
+                .setColor('#57F287')
+                .setAuthor({ name: `Content saved from #${message.channel.name}`, iconURL: message.guild.iconURL() })
+                .setDescription(message.content.length > 0 ? message.content.substring(0, 4096) : '*This message did not have any text content.*')
+                .addFields(
+                    { name: 'Original Author', value: message.author.tag, inline: true },
+                    { name: 'Posted On', value: postDate, inline: true }
+                )
+                .addFields({ name: '\u200B', value: `[Click here to jump to the original message](${message.url})` })
+                .setTimestamp(message.createdAt);
+
+            if (message.attachments.size > 0) {
+                const attachmentLinks = message.attachments.map(att => `[${att.name}](${att.url})`).join('\n');
+                storageEmbed.addFields({ name: 'Attachments', value: attachmentLinks.substring(0, 1024) });
+            }
+
+            const firstImage = message.attachments.find(att => att.contentType?.startsWith('image/'));
+            if (firstImage) {
+                storageEmbed.setImage(firstImage.url);
+            }
+
+            await reactor.send({ embeds: [storageEmbed] });
+        } catch (error) {
+            console.error(`Could not send storage DM to ${reactor.tag} (ID: ${reactor.id}). Error: ${error.message}`);
+            if (error.code === 50007) {
+                console.log(`-> Reason: User has DMs disabled or has blocked the bot.`);
+            }
+        }
+    }
 
     // --- Translation Logic ---
     if (
@@ -448,11 +534,10 @@ client.on('messageReactionAdd', async (reaction, user) => {
         config.geminiApiKey &&
         (reaction.emoji.name === config.translateEmoji || reaction.emoji.toString() === config.translateEmoji)
     ) {
-        // Only trigger if it's the first instance of this specific emoji on this message
         if (reaction.count === 1 && !client.translatedMessages.has(reaction.message.id)) {
             if (!reaction.message.content || reaction.message.content.trim() === "") {
                 console.log(`[Translate] Message ${reaction.message.id} has no content to translate.`);
-                client.translatedMessages.add(reaction.message.id); // Mark as processed to avoid re-checks
+                client.translatedMessages.add(reaction.message.id);
             } else {
                 console.log(`[Translate] Triggered translation for message ${reaction.message.id} to ${config.translateToLanguage} as it's the first '${config.translateEmoji}' reaction.`);
                 try {
@@ -470,25 +555,22 @@ client.on('messageReactionAdd', async (reaction, user) => {
                             const translationContent = `>>> ${translation}`;
                             for (let i = 0; i < translationContent.length; i += MAX_REPLY_LENGTH) {
                                 const chunk = translationContent.substring(i, Math.min(i + MAX_REPLY_LENGTH, translationContent.length));
-                                await reaction.message.channel.send(chunk).catch(console.error); // Send subsequent chunks in channel
+                                await reaction.message.channel.send(chunk).catch(console.error);
                             }
                         } else {
                             await reaction.message.reply(fullReply).catch(console.error);
                         }
                     } else {
                         console.warn(`[Translate] AI translation failed or returned an error for message ${reaction.message.id}: ${translation}`);
-                        // Optionally inform the user, but be mindful of spamming if AI frequently fails
-                        // await reaction.message.reply(`Sorry, I couldn't translate that message right now.`).catch(console.error);
                     }
                 } catch (translateError) {
                     console.error(`[Translate] Error during translation process for message ${reaction.message.id}:`, translateError);
                 } finally {
-                    client.translatedMessages.add(reaction.message.id); // Mark as processed after attempt
+                    client.translatedMessages.add(reaction.message.id);
                 }
             }
         }
     }
-    // End Translation Logic
 
     // --- Knowledge Copy Logic ---
     if (config.knowledgeCopyToChannelName && typeof config.knowledgeCopyEmojisMin === 'number' && config.knowledgeCopyWhenEmoji) {
@@ -540,7 +622,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
             }
         }
     }
-    // End Knowledge Copy Logic
 });
 
 client.on('messageReactionRemove', async (reaction, user) => {
@@ -550,9 +631,7 @@ client.on('messageReactionRemove', async (reaction, user) => {
     if (reaction.partial) { try { await reaction.fetch(); } catch (e) { console.error('[ReactionRemove] Failed to fetch partial reaction:', e); return; } }
     if (reaction.message.partial) { try { await reaction.message.fetch(); } catch (e) { console.error('[ReactionRemove] Failed to fetch partial message for reaction:', e); return; } }
 
-    // --- Reaction Role Logic ---
     await handleReactionRole(reaction, user, 'remove');
-    // End Reaction Role Logic
 });
 
 
@@ -682,6 +761,7 @@ client.on('messageCreate', async message => {
             embed.addFields({ name: "📢 Public Commands", value: "\u200B" });
             embed.addFields(
                 { name: `${config.prefix}activity`, value: "Shows user activity report." },
+                { name: `${config.prefix}remindme <time> <message>`, value: "Sets a personal reminder." },
                 { name: `${config.prefix}watch`, value: "Shows time until the next scheduled video poll." },
                 { name: `${config.prefix}positivity`, value: "Get an uplifting positive message from the AI." },
                 { name: `${config.prefix}commands / ${config.prefix}help`, value: "Shows this help message." }
@@ -713,6 +793,43 @@ client.on('messageCreate', async message => {
                 { name: `\`${config.tagShowPrefix}\``, value: `Lists all tags.` }
             );
             try { await message.channel.send({ embeds: [embed] }); } catch (e) { console.error("Help send error", e); }
+        }
+        else if (command === "remindme") {
+            const timeAndMessage = args.join(' ');
+            if (!timeAndMessage) {
+                return message.reply(`Usage: \`${config.prefix}remindme <time> <your message>\`\nExample: \`${config.prefix}remindme 10 days Post the update!\``).catch(console.error);
+            }
+
+            const results = chrono.parse(timeAndMessage);
+            if (results.length === 0) {
+                return message.reply("I couldn't understand the time you provided. Please try again (e.g., 'in 3 hours', 'tomorrow at 5pm', '10 days').").catch(console.error);
+            }
+
+            const reminderDate = results[0].start.date();
+            const reminderText = timeAndMessage.substring(results[0].index + results[0].text.length).trim();
+
+            if (reminderDate.getTime() <= Date.now()) {
+                return message.reply("You can't set a reminder for a time in the past!").catch(console.error);
+            }
+
+            if (!reminderText) {
+                return message.reply("You need to provide a message for your reminder!").catch(console.error);
+            }
+
+            const newReminder = {
+                id: `${message.id}-${Date.now()}`,
+                userId: message.author.id,
+                channelId: message.channel.id,
+                guildId: message.guild.id,
+                triggerTimestamp: reminderDate.getTime(),
+                message: reminderText
+            };
+
+            botData.reminders.push(newReminder);
+            saveData();
+
+            const confirmationDate = DateTime.fromJSDate(reminderDate).toFormat("DDDD 'at' h:mm a ZZZZ");
+            await message.reply(`✅ Got it! I will remind you on **${confirmationDate}** with the message: "${reminderText}"`).catch(console.error);
         }
         else if (command === "watch") {
             if (!autoYoutubePollJob) return message.reply("Automated video poll not scheduled/configured.").catch(console.error);
@@ -856,7 +973,7 @@ client.on('messageCreate', async message => {
             try { let parsedValue;
                 if(originalType==='number'){parsedValue=parseFloat(newValueRaw);if(isNaN(parsedValue))throw new Error("Invalid input: Not a valid number.");}
                 else if(originalType==='boolean'){if(args.length<2)parsedValue=!config[settingName];else if(newValueRaw.toLowerCase()==='true')parsedValue=true;else if(newValueRaw.toLowerCase()==='false')parsedValue=false;else throw new Error("Invalid input for boolean: Use 'true' or 'false'.");}
-                else if (originalType === 'object' && Array.isArray(config[settingName])) { // Handle array type for reactionRoles
+                else if (originalType === 'object' && Array.isArray(config[settingName])) {
                     try { parsedValue = JSON.parse(newValueRaw); if (!Array.isArray(parsedValue)) throw new Error("Value must be a valid JSON array.");}
                     catch (jsonErr) { throw new Error("Invalid JSON array format for this setting."); }
                 }
@@ -927,7 +1044,7 @@ async function createYoutubeWatchPoll(channel, criteria, targetChannelIdForFilte
     const pollQuestionText=`Vote: Which video should we watch?`;
     const pollAnswers=linksForThisPoll.map(link=>{
         let title = link.title || "Untitled YouTube Video";
-        const maxPollOptionLength = 55; // Discord Poll Option Limit (updated)
+        const maxPollOptionLength = 55;
         if(title.length > maxPollOptionLength) title = title.substring(0,maxPollOptionLength-3)+"...";
         return {text: title};
     });
