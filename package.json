@@ -1,0 +1,24 @@
+{
+  "name": "Genny",
+  "version": "1.0.0",
+  "description": "",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "nodejs"
+  ],
+  "author": "Shane Britt",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.0.0",
+    "ytdl-core": "^4.9.1",
+    "cron": "^1.8.2",
+    "axios": "^0.27.2",
+    "luxon": "^3.0.0",
+    "chrono-node": "^2.3.0"
+  }
+}
